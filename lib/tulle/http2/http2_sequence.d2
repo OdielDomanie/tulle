@@ -1,0 +1,77 @@
+request: {
+  shape: sequence_diagram
+
+  Caller
+  Client
+  Socket
+
+  Caller.req_span -> Client: "call {:request, return_to, {method, path, headers}, body}"
+  if conn closed: {
+    Client -- Socket: Open conn
+  }
+  if: {
+    body can fit inside connection window: {
+      Client -- Socket: request with body
+    }
+    body can't fit in one frame: {
+      Client -- Socket: request with :stream
+      Client -> Client: "{:chunk, ref, chunk, :eof}"
+      repeat until chunk is depleted: {
+        Client -- Socket: request_stream with chunk
+        Client -> Client: "{:chunk, ref, remaining_chunk, :eof}"
+      }
+      Client -- Socket: request_stream with :eof
+    }
+  }
+  Client -> Caller: "reply {:ok, ref}"
+  Client <- Socket: status
+  Caller <- Client: "{:status, ref, status}"
+  Client <- Socket: headers
+  Caller.req_span <- Client: "{:headers, ref, header}"
+  repeated 0+: {
+    Client <- Socket: data
+    Caller <- Client: "{:data, ref, data}"
+  }
+  Client <- Socket: done
+  Caller <- Client: "{:done, ref}"
+}
+
+Collectable Request: {
+  shape: sequence_diagram
+
+  Caller
+  Client
+  Socket
+
+  Caller -> Client: "call {:request_stream, return_to, {method, path, headers}}"
+  if conn closed: {
+    Client -- Socket: Open conn
+  }
+  Client -- Socket: request with :stream
+  Caller <- Client: "reply {:ok, ref}"
+
+  repeated 0+ (request stream): {
+    Caller -> Client: "call {:chunk, ref, data}"
+    Client -> Client: "{:chunk, ref, data}"
+    repeat until chunk is depleted: {
+      Client -- Socket: request_stream with chunk
+      Client -> Client: "{:chunk, ref, remaining_chunk}"
+    }
+    Caller <- Client: "reply :ok"
+  }
+  Caller -> Client: "caller {:chunk, ref, :eof}"
+  Client -> Client: "{:chunk, ref, :eof}"
+  Client -- Socket: request_stream with :eof
+  Caller <- Client: "reply :ok"
+
+  Client <- Socket: status
+  Caller <- Client: "{:status, ref, status}"
+  Client <- Socket: headers
+  Caller <- Client: "{:headers, ref, header}"
+  repeated 0+ (response stream): {
+    Client <- Socket: data
+    Caller <- Client: "{:data, ref, data}"
+  }
+  Client <- Socket: done
+  Caller <- Client: "{:done, ref}"
+}
