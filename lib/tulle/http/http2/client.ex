@@ -1,4 +1,7 @@
 defmodule Tulle.Http2.Client do
+  @moduledoc """
+  HTTP2 Client. Used with `Tulle.Http`.
+  """
   use GenServer
 
   import Map

@@ -389,7 +389,7 @@ defmodule Tulle.Websocket do
     {:noreply, {:closed, data}}
   end
 
-  ### Receive errored frame 
+  ### Receive errored frame
   def handle_info({:frame, ref, {:error, reason}}, {:open, data})
       when ref == data.ref do
     Logger.error("Could not decode frame: #{i(reason)}")

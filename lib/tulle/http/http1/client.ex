@@ -1,5 +1,10 @@
 defmodule Tulle.Http1.Client do
-  @moduledoc false
+  @moduledoc """
+  HTTP1 Client. Used with `Tulle.Http`.
+
+  Tries to reconnect when the connection is lost,
+  exits if it can't reconnect with `{:cant_connect, reason}`
+  """
 
   use GenServer
 
@@ -102,7 +107,7 @@ defmodule Tulle.Http1.Client do
     case HTTP1.stream(state.conn, msg) do
       #
       {:ok, conn, resps} ->
-        Enum.map(
+        Enum.each(
           resps,
           fn resp ->
             send(state.req_caller, resp)
@@ -121,7 +126,7 @@ defmodule Tulle.Http1.Client do
 
       #
       {:error, conn, err, resps} ->
-        Enum.map(resps, &send(state.req_caller, &1))
+        Enum.each(resps, &send(state.req_caller, &1))
         send(state.req_caller, {:error, err})
         state = %{state | conn: conn}
         {:noreply, state}
