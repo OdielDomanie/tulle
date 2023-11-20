@@ -1,10 +1,12 @@
-defmodule Tulle.Http2Test do
-  use ExUnit.Case
+defmodule Tulle.Http2FuzzTest do
+  use ExUnit.Case, async: true
   import ExUnitProperties
+
+  @moduletag :fuzzing
 
   require Bandit
 
-  alias Tulle.Http2
+  alias Tulle.Http
   alias Tulle.Http2.Client
 
   property "fill_to_size" do
@@ -95,22 +97,20 @@ defmodule Tulle.Http2Test do
 
       {:ok, client} =
         Client.start_link(
-          {"127.0.0.1",
-           http_opts: [
-             connect_opts: [
-               transport_opts: [
-                 verify: :verify_none
-               ]
-             ],
-             port: 8433
-           ]}
+          address: "127.0.0.1",
+          port: 8433,
+          connect_opts: [
+            transport_opts: [
+              verify: :verify_none
+            ]
+          ]
         )
 
       planned_req
       |> Task.async_stream(
         fn {req_id, req_resp} ->
           {status, _headers, resp_body} =
-            Http2.request!(
+            Http.request!(
               client,
               {:get, "/", [{"req_id", req_id}]},
               req_resp.req_body
@@ -162,25 +162,23 @@ defmodule Tulle.Http2Test do
 
       {:ok, client} =
         Client.start_link(
-          {"127.0.0.1",
-           http_opts: [
-             connect_opts: [
-               transport_opts: [verify: :verify_none]
-             ],
-             port: 8433
-           ]}
+          address: "127.0.0.1",
+          port: 8433,
+          connect_opts: [
+            transport_opts: [verify: :verify_none]
+          ]
         )
 
       planned_req
       |> Task.async_stream(
         fn {req_id, req_resp} ->
           collectable =
-            Http2.request_collectable!(client, {:get, "/", [{"req_id", req_id}]})
+            Http.request_collectable!(client, {:get, "/", [{"req_id", req_id}]})
 
           {status, _headers, resp_body} =
             req_resp.req_body
             |> Enum.into(collectable)
-            |> Http2.close_request!()
+            |> Http.close_request!()
 
           assert status == req_resp.status
 
@@ -204,8 +202,8 @@ defmodule Tulle.Http2Test do
   end
 
   defp ca_files do
-    key_file = Path.dirname(__ENV__.file) |> Path.join("http2/key.pem")
-    cert_file = Path.dirname(__ENV__.file) |> Path.join("http2/cert.pem")
+    key_file = Path.dirname(__ENV__.file) |> Path.join("cert/key.pem")
+    cert_file = Path.dirname(__ENV__.file) |> Path.join("cert/cert.pem")
     {key_file, cert_file}
   end
 end

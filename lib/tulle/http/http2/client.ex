@@ -9,11 +9,15 @@ defmodule Tulle.Http2.Client do
 
   @type t :: GenServer.name()
 
-  def start_link({address, opts}) do
-    GenServer.start_link(__MODULE__, {address, opts[:http_opts]}, opts)
+  def start_link(opts) do
+    GenServer.start_link(
+      __MODULE__,
+      {opts[:scheme], opts[:address], opts[:port], opts[:connect_opts]},
+      opts
+    )
   end
 
-  defp default_connect_opts do
+  defp default_connect_opts(:https) do
     [
       transport_opts: [
         cacerts: :public_key.cacerts_get(),
@@ -26,16 +30,27 @@ defmodule Tulle.Http2.Client do
     ]
   end
 
+  defp default_connect_opts(:http) do
+    [
+      transport_opts: [
+        timeout: 10_000
+      ],
+      client_settings: [
+        enable_push: false
+      ]
+    ]
+  end
+
   @impl true
   @doc false
-  def init({address, http_opts}) do
+  def init({scheme, address, port, connect_opts}) do
     connect_opts =
-      DeepMerge.deep_merge(default_connect_opts(), http_opts[:connect_opts] || [])
+      DeepMerge.deep_merge(default_connect_opts(scheme || :https), connect_opts || [])
 
     case Mint.HTTP2.connect(
-           :https,
+           scheme || :https,
            address,
-           Access.get(http_opts, :port, 443),
+           port || 443,
            connect_opts
          ) do
       {:ok, conn} ->
@@ -46,7 +61,8 @@ defmodule Tulle.Http2.Client do
            requests: %{},
            window_waiting: [],
            connect_opts: connect_opts,
-           port: Access.get(http_opts, :port, 443)
+           port: port || 443,
+           scheme: scheme || :https
          }}
 
       {:error, error} ->
@@ -56,6 +72,8 @@ defmodule Tulle.Http2.Client do
 
   @impl true
   @doc false
+  def handle_call(:protocol, _from, state), do: {:reply, :http2, state}
+
   def handle_call(
         {:request, return_to, {method, path, headers}, body},
         from,
@@ -291,7 +309,7 @@ defmodule Tulle.Http2.Client do
     else
       # It might be still open for reading only. Just close it.
       HTTP2.close(conn)
-      HTTP2.connect(:https, state.address, state.port, state.connect_opts)
+      HTTP2.connect(state.scheme, state.address, state.port, state.connect_opts)
     end
   end
 
