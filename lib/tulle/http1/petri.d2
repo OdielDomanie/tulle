@@ -1,0 +1,106 @@
+classes: {
+  transition: {
+    shape: rectangle
+    # label.near: outside-left-center
+    height: 1
+    # style.fill: "#101010"
+  }
+  place: {
+    shape: circle
+    # height: 1
+  }
+  state_match: {
+    style.stroke-dash: 3
+  }
+
+  state_match_symmetric: {
+    style.stroke-dash: 7
+  }
+}
+(*.* -> *.*)[*].class: state_match
+(*.* <-> *.*)[*].class: state_match_symmetric
+
+# request_data: \{path, method, headers, body\}
+
+User: {
+  request.call.class: transition
+  request.return.class: place
+  request_stream.class: place
+  start_conn_holder.call.class: place
+  start_conn_holder.return.class: place
+}
+
+Request: {
+  awaiting.class: place
+  sending_request.class: place
+  send_request.class: transition
+  resp_status.class: place
+  get_headers.class: transition
+  get_body.class: transition
+  get_eof.class: transition
+  monitor.class: transition
+  terminate.class: place
+  terminate.style.double-border: true
+}
+
+ConnHolder: {
+  connection.class: place
+  send_request.class: transition
+  process_msg.class: transition
+  # responses.class: place
+  status_response.class: place
+  header_response.class: place
+  body_response.class: place
+  terminate.class: place
+  init.class: transition
+  terminate.style.double-border: true
+}
+
+external.class: place
+
+User.request.call -> Request.sending_request: \{:request, request_data\}
+Request.awaiting -> Request.sending_request: :request
+
+Request.sending_request -> Request.send_request
+Request.send_request -> Request.awaiting: :req_ref
+Request.send_request -> ConnHolder.send_request: request_data
+ConnHolder.connection -> ConnHolder.send_request: conn
+ConnHolder.send_request -> Request.awaiting: \{:resp, request_ref\}
+ConnHolder.send_request -> ConnHolder.connection: upd_conn
+
+external -> ConnHolder.process_msg: info
+ConnHolder: {
+  connection -> process_msg: conn
+  process_msg -> connection: upd_conn
+  process_msg -> responses: \[resp\] *
+}
+
+ConnHolder.responses -> Request.resp_status: \{req_ref, status\}
+
+ConnHolder.responses -> Request.get_headers: \{req_ref, headers\}
+
+ConnHolder.responses -> Request.get_body: \{req_ref, data\}
+Request.awaiting <-> Request.get_body: \{:resp, req_ref\}
+
+ConnHolder.responses -> Request.get_eof: \{:eof, req_ref\}
+Request.awaiting <-> Request.get_eof: \{:resp, req_ref\}
+
+Request.awaiting <-> Request.get_headers: \{:resp, req_ref\}
+Request.resp_status -> Request.get_headers: \{request_ref, status\}
+Request.get_headers -> User.request.return: \{status, headers, body_stream\}
+
+Request.get_body -> User.request_stream: \{data, req_ref\}
+Request.get_eof -> User.request_stream: \{:eof, req_ref\}
+
+User.start_conn_holder.call -> ConnHolder.init: \{scheme, address, port\}
+ConnHolder.init -> ConnHolder.connection: connection
+ConnHolder.init -> User.start_conn_holder.return: :ok
+
+ConnHolder.process_msg -> ConnHolder.terminate: ?
+ConnHolder.terminate -> Request.monitor: monitor
+Request.monitor -> Request.terminate
+
+Request.get_eof -> Request.terminate
+
+Request.init.class: transition
+Request.init -> Request.awaiting: :request
