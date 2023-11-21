@@ -87,7 +87,8 @@ defmodule Tulle.Http1.Client do
   end
 
   def handle_call({:chunk, ref, data}, _, %{status: :sending, req_ref: ref} = state) do
-    with {:ok, conn} <- HTTP1.stream_request_body(state.conn, state.req_ref, data) do
+    with {:ok, conn} <-
+           HTTP1.stream_request_body(state.conn, state.req_ref, data) |> maybe_reply_error(state) do
       state = %{state | conn: conn}
       {:reply, :ok, state}
     end
@@ -152,12 +153,16 @@ defmodule Tulle.Http1.Client do
     conn = state.conn
     {:ok, _conn} = HTTP1.close(conn)
 
+    Logger.debug("Reconnecting")
+
     case connect(state.connect_args) do
       {:ok, conn} ->
+        Logger.debug("Reconnected")
         state = %{state | conn: conn, status: :idle}
         {:noreply, state}
 
       {:error, error} ->
+        Logger.debug("Could not reconnect")
         {:stop, {:cant_connect, error}, state}
     end
   end

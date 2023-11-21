@@ -1,4 +1,4 @@
-defmodule Tulle.Http2FuzzTest do
+defmodule Tulle.Http1PoolFuzzTest do
   use ExUnit.Case, async: true
   import ExUnitProperties
 
@@ -7,27 +7,9 @@ defmodule Tulle.Http2FuzzTest do
   require Bandit
 
   alias Tulle.Http
-  alias Tulle.Http2.Client
+  alias Tulle.Http1
 
-  @port 8433
-
-  property "fill_to_size" do
-    check all(
-            x <- StreamData.iodata(),
-            n <- StreamData.positive_integer()
-          ) do
-      {res, res_rest} = Client.fill_to_size(x, n)
-
-      x_len = IO.iodata_length(x)
-
-      if x_len <= n do
-        assert res_rest == {:rem, n - x_len}
-        assert IO.iodata_to_binary(res) == IO.iodata_to_binary(x)
-      else
-        assert IO.iodata_to_binary([res, res_rest]) == IO.iodata_to_binary(x)
-      end
-    end
-  end
+  @port 8434
 
   defmodule TestingPlug do
     import Plug.Conn
@@ -81,28 +63,27 @@ defmodule Tulle.Http2FuzzTest do
   defp start_server(planned_req) do
     {key_file, cert_file} = ca_files()
 
-    start_supervised!(
-      {
-        Bandit,
-        plug: {__MODULE__.TestingPlug, planned_req},
-        scheme: :https,
-        port: @port,
-        ip: :loopback,
-        keyfile: key_file,
-        certfile: cert_file,
-        cipher_suite: :strong,
-        startup_log: false,
-        http_1_options: [enabled: false],
-        http_2_options: [default_local_settings: [initial_window_size: 10]]
-      },
-      restart: :transient,
-      id: Bandit
+    Bandit.start_link(
+      plug: {__MODULE__.TestingPlug, planned_req},
+      scheme: :https,
+      port: @port,
+      ip: :loopback,
+      keyfile: key_file,
+      certfile: cert_file,
+      cipher_suite: :strong,
+      # startup_log: false,
+      http_1_options: [enabled: false],
+      http_2_options: [default_local_settings: [initial_window_size: 10]]
     )
+    |> elem(1)
   end
 
-  defp start_client do
+  defp start_pool do
+    {:ok, sv} = DynamicSupervisor.start_link([])
+
     start_supervised!(
-      {Client,
+      {Http1.Pool,
+       sv: sv,
        address: "127.0.0.1",
        port: @port,
        connect_opts: [
@@ -117,13 +98,18 @@ defmodule Tulle.Http2FuzzTest do
   @tag :integration
   @tag timeout: 120_000
   property "fuzz req body, resp body, status against local server" do
-    check all(planned_req <- request_response_gen()) do
-      _bandit = start_server(planned_req)
-      client = start_client()
+    task_sv = start_link_supervised!(Task.Supervisor)
 
-      planned_req
-      |> Task.async_stream(
+    check all(planned_req <- request_response_gen()) do
+      bandit = start_server(planned_req)
+      pool = start_pool()
+
+      Task.Supervisor.async_stream(
+        task_sv,
+        planned_req,
         fn {req_id, req_resp} ->
+          client = Http1.Pool.check_out!(pool)
+
           {status, _headers, resp_body} =
             Http.request!(
               client,
@@ -142,8 +128,13 @@ defmodule Tulle.Http2FuzzTest do
       )
       |> Stream.run()
 
-      stop_supervised!(Client)
-      stop_supervised!(Bandit)
+      stop_supervised!(Http1.Pool)
+      Process.exit(bandit, :normal)
+      Process.monitor(bandit)
+
+      receive do
+        {:DOWN, _, _, ^bandit, _} -> :ok
+      end
     end
   end
 
@@ -154,34 +145,44 @@ defmodule Tulle.Http2FuzzTest do
   @tag :integration
   @tag timeout: 120_000
   property "fuzz streaming requests against local server" do
+    task_sv = start_link_supervised!(Task.Supervisor)
+
     check all(planned_req <- stream_request_response_gen()) do
-      _bandit = start_server(planned_req)
-      client = start_client()
+      bandit = start_server(planned_req)
+      pool = start_pool()
 
-      planned_req
-      |> Task.async_stream(
-        fn {req_id, req_resp} ->
-          collectable =
-            Http.request_collectable!(client, {:get, "/", [{"req_id", req_id}]})
+      results =
+        for {req_id, req_resp} <- planned_req do
+          fn ->
+            client = Http1.Pool.check_out!(pool)
 
-          {status, _headers, resp_body} =
-            req_resp.req_body
-            |> Enum.into(collectable)
-            |> Http.close_request!()
+            collectable =
+              Http.request_collectable!(client, {:get, "/", [{"req_id", req_id}]})
 
-          assert status == req_resp.status
+            {status, _headers, resp_body} =
+              req_resp.req_body
+              |> Enum.into(collectable)
+              |> Http.close_request!()
 
-          assert IO.iodata_to_binary(Enum.to_list(resp_body)) ==
-                   IO.iodata_to_binary(req_resp.resp_body)
-        end,
-        max_concurrency: 50,
-        ordered: false,
-        timeout: :infinity
-      )
-      |> Stream.run()
+            assert status == req_resp.status
 
-      stop_supervised!(Client)
-      stop_supervised!(Bandit)
+            assert IO.iodata_to_binary(Enum.to_list(resp_body)) ==
+                     IO.iodata_to_binary(req_resp.resp_body)
+          end
+        end
+        |> Enum.map(&Task.Supervisor.async_nolink(task_sv, &1))
+        |> Task.yield_many(on_timeout: :kill_task)
+
+      stop_supervised!(Http1.Pool)
+      Process.unlink(bandit)
+      Process.exit(bandit, :shutdown)
+      Process.monitor(bandit)
+
+      receive do
+        {:DOWN, _, _, ^bandit, _} -> :ok
+      end
+
+      assert Enum.all?(results, fn {_, res} -> match?({:ok, _}, res) end)
     end
   end
 

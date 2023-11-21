@@ -1,4 +1,4 @@
-defmodule Tulle.Pool do
+defmodule Tulle.Http1.Pool do
   @moduledoc """
   Pool used for Http1.
   """
@@ -44,7 +44,9 @@ defmodule Tulle.Pool do
 
     state = %{
       workers: %{first_worker => timer},
-      seq: false
+      seq: false,
+      sv: sv,
+      connect_args: connect_args
     }
 
     {:ok, state}
@@ -53,14 +55,14 @@ defmodule Tulle.Pool do
   defp spawn_http1_worker(sv, connect_args) do
     spec =
       Supervisor.child_spec(
-        {Http1, connect_args},
+        {Http1.Client, connect_args},
         restart: :temporary
       )
 
     with {:ok, worker} <- DynamicSupervisor.start_child(sv, spec) do
       timer = set_timer(worker)
       Process.monitor(worker)
-      {worker, timer}
+      {:ok, worker, timer}
     end
   end
 
@@ -72,10 +74,10 @@ defmodule Tulle.Pool do
   def handle_call(:check_out, _from, %{workers: workers} = state) when map_size(workers) > 0 do
     [{worker, timer}] = Enum.take(workers, 1)
     workers = Map.delete(workers, worker)
-    Process.cancel_timer(timer, async: true)
+    Process.cancel_timer(timer, async: true, info: false)
     state = %{state | workers: workers}
 
-    {:reply, worker, state, {:continue, :spawn_if_low}}
+    {:reply, {:ok, worker}, state, {:continue, :spawn_if_low}}
   end
 
   @impl true
@@ -103,7 +105,7 @@ defmodule Tulle.Pool do
   def handle_info({:DOWN, _ref, :process, proc, _reason}, %{workers: workers} = state)
       when is_map_key(workers, proc) do
     {timer, workers} = Map.pop!(workers, proc)
-    Process.cancel_timer(timer, async: true)
+    Process.cancel_timer(timer, async: true, info: false)
 
     state = %{state | workers: workers}
     {:noreply, state, {:continue, :spawn_if_low}}
