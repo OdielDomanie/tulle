@@ -1,27 +1,51 @@
 defmodule Tulle.Http1PoolFuzzTest do
   use ExUnit.Case, async: true
   import ExUnitProperties
-
-  @moduletag :fuzzing
-
+  require Logger
   require Bandit
 
   alias Tulle.Http
   alias Tulle.Http1
 
+  @moduletag :fuzzing
+  # @moduletag capture_log: true
+
   @port 8434
+
+  # Must increase open file descriptor limit!
+  # 10_000 seems OK
+
+  setup_all do
+    table = :ets.new(__MODULE__.ReqTable, [:public])
+    {key_file, cert_file} = ca_files()
+
+    start_supervised!({
+      Bandit,
+      startup_log: false,
+      plug: {__MODULE__.TestingPlug, table},
+      scheme: :https,
+      port: @port,
+      ip: :loopback,
+      keyfile: key_file,
+      certfile: cert_file,
+      cipher_suite: :strong,
+      http_2_options: [default_local_settings: [initial_window_size: 10]]
+    })
+
+    %{planned_req_table: table}
+  end
 
   defmodule TestingPlug do
     import Plug.Conn
 
-    def init(requests) do
-      requests
+    def init(table) do
+      table
     end
 
-    def call(conn, requests) do
+    def call(conn, table) do
       {:ok, req_body, conn} = read_body(conn)
       [req_id] = get_req_header(conn, "req_id")
-      planned_req = requests[req_id]
+      [{_, planned_req}] = :ets.lookup(table, req_id)
 
       case planned_req.req_body do
         nil ->
@@ -45,7 +69,7 @@ defmodule Tulle.Http1PoolFuzzTest do
             resp_body <- StreamData.iodata(),
             IO.iodata_length(resp_body) < 8_000_000,
             status <- StreamData.integer(200..200),
-            delay <- StreamData.integer(0..10)
+            delay <- StreamData.integer(0..30)
           ) do
         %{req_body: req_body, resp_body: resp_body, status: status, delay: delay}
       end
@@ -53,29 +77,11 @@ defmodule Tulle.Http1PoolFuzzTest do
     key_gen =
       StreamData.repeatedly(fn -> System.unique_integer([:positive]) |> to_string() end)
 
-    StreamData.map_of(key_gen, single_req_resp)
+    StreamData.map_of(key_gen, single_req_resp, max_length: 200)
   end
 
   defp request_response_gen do
     request_response_gen(StreamData.one_of([nil, StreamData.iodata()]))
-  end
-
-  defp start_server(planned_req) do
-    {key_file, cert_file} = ca_files()
-
-    Bandit.start_link(
-      plug: {__MODULE__.TestingPlug, planned_req},
-      scheme: :https,
-      port: @port,
-      ip: :loopback,
-      keyfile: key_file,
-      certfile: cert_file,
-      cipher_suite: :strong,
-      # startup_log: false,
-      http_1_options: [enabled: false],
-      http_2_options: [default_local_settings: [initial_window_size: 10]]
-    )
-    |> elem(1)
   end
 
   defp start_pool do
@@ -97,58 +103,63 @@ defmodule Tulle.Http1PoolFuzzTest do
 
   @tag :integration
   @tag timeout: 120_000
-  property "fuzz req body, resp body, status against local server" do
+  property "fuzz req body, resp body, status against local server", context do
     task_sv = start_link_supervised!(Task.Supervisor)
 
     check all(planned_req <- request_response_gen()) do
-      bandit = start_server(planned_req)
+      :ets.delete_all_objects(context.planned_req_table)
+      :ets.insert(context.planned_req_table, Enum.to_list(planned_req))
       pool = start_pool()
 
-      Task.Supervisor.async_stream(
-        task_sv,
-        planned_req,
-        fn {req_id, req_resp} ->
-          client = Http1.Pool.check_out!(pool)
+      results =
+        for {req_id, req_resp} <- planned_req do
+          fn ->
+            Process.sleep(req_resp.delay)
+            client = Http1.Pool.check_out!(pool)
 
-          {status, _headers, resp_body} =
-            Http.request!(
-              client,
-              {:get, "/", [{"req_id", req_id}]},
-              req_resp.req_body
-            )
+            {status, _headers, resp_body} =
+              Http.request!(
+                client,
+                {:get, "/", [{"req_id", req_id}]},
+                req_resp.req_body
+              )
 
-          assert status == req_resp.status
+            assert status == req_resp.status
 
-          assert IO.iodata_to_binary(Enum.to_list(resp_body)) ==
-                   IO.iodata_to_binary(req_resp.resp_body)
-        end,
-        max_concurrency: 50,
-        ordered: false,
-        timeout: :infinity
-      )
-      |> Stream.run()
+            assert IO.iodata_to_binary(Enum.to_list(resp_body)) ==
+                     IO.iodata_to_binary(req_resp.resp_body)
+
+            Http1.Pool.check_in(pool, client)
+          end
+        end
+        |> Enum.map(&Task.Supervisor.async_nolink(task_sv, &1))
+        |> Task.yield_many(on_timeout: :kill_task)
+
+      assert map_size(planned_req) >= (:sys.get_state(pool)[:workers] |> map_size) - 1
+      # Logger.debug(
+      #   count_req: map_size(planned_req),
+      #   open_conns: :sys.get_state(pool)[:workers] |> map_size
+      # )
 
       stop_supervised!(Http1.Pool)
-      Process.exit(bandit, :normal)
-      Process.monitor(bandit)
 
-      receive do
-        {:DOWN, _, _, ^bandit, _} -> :ok
-      end
+      assert Enum.all?(results, fn {_, res} -> match?({:ok, _}, res) end)
     end
   end
 
   defp stream_request_response_gen do
-    request_response_gen(StreamData.list_of(StreamData.iodata()))
+    request_response_gen(StreamData.list_of(StreamData.iodata(), max_length: 20))
   end
 
   @tag :integration
   @tag timeout: 120_000
-  property "fuzz streaming requests against local server" do
+  property "fuzz streaming requests against local server", context do
     task_sv = start_link_supervised!(Task.Supervisor)
 
     check all(planned_req <- stream_request_response_gen()) do
-      bandit = start_server(planned_req)
+      :ets.delete_all_objects(context.planned_req_table)
+      :ets.insert(context.planned_req_table, Enum.to_list(planned_req))
+
       pool = start_pool()
 
       results =
@@ -168,19 +179,16 @@ defmodule Tulle.Http1PoolFuzzTest do
 
             assert IO.iodata_to_binary(Enum.to_list(resp_body)) ==
                      IO.iodata_to_binary(req_resp.resp_body)
+
+            Http1.Pool.check_in(pool, client)
           end
         end
         |> Enum.map(&Task.Supervisor.async_nolink(task_sv, &1))
         |> Task.yield_many(on_timeout: :kill_task)
 
-      stop_supervised!(Http1.Pool)
-      Process.unlink(bandit)
-      Process.exit(bandit, :shutdown)
-      Process.monitor(bandit)
+      assert map_size(planned_req) >= (:sys.get_state(pool)[:workers] |> map_size) - 1
 
-      receive do
-        {:DOWN, _, _, ^bandit, _} -> :ok
-      end
+      stop_supervised!(Http1.Pool)
 
       assert Enum.all?(results, fn {_, res} -> match?({:ok, _}, res) end)
     end

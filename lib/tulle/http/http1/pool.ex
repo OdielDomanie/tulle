@@ -98,7 +98,7 @@ defmodule Tulle.Http1.Pool do
     timer = set_timer(worker)
     workers = Map.put(state.workers, worker, timer)
     state = %{state | workers: workers}
-    {:noreply, worker, state}
+    {:noreply, state}
   end
 
   @impl true

@@ -29,17 +29,38 @@ defmodule Tulle.Http2FuzzTest do
     end
   end
 
+  setup_all do
+    table = :ets.new(__MODULE__.ReqTable, [:public])
+    {key_file, cert_file} = ca_files()
+
+    start_supervised!({
+      Bandit,
+      startup_log: false,
+      plug: {__MODULE__.TestingPlug, table},
+      scheme: :https,
+      port: @port,
+      ip: :loopback,
+      keyfile: key_file,
+      certfile: cert_file,
+      cipher_suite: :strong,
+      http_1_options: [enabled: false],
+      http_2_options: [default_local_settings: [initial_window_size: 10]]
+    })
+
+    %{planned_req_table: table}
+  end
+
   defmodule TestingPlug do
     import Plug.Conn
 
-    def init(requests) do
-      requests
+    def init(table) do
+      table
     end
 
-    def call(conn, requests) do
+    def call(conn, table) do
       {:ok, req_body, conn} = read_body(conn)
       [req_id] = get_req_header(conn, "req_id")
-      planned_req = requests[req_id]
+      [{_, planned_req}] = :ets.lookup(table, req_id)
 
       case planned_req.req_body do
         nil ->
@@ -78,28 +99,6 @@ defmodule Tulle.Http2FuzzTest do
     request_response_gen(StreamData.one_of([nil, StreamData.iodata()]))
   end
 
-  defp start_server(planned_req) do
-    {key_file, cert_file} = ca_files()
-
-    start_supervised!(
-      {
-        Bandit,
-        plug: {__MODULE__.TestingPlug, planned_req},
-        scheme: :https,
-        port: @port,
-        ip: :loopback,
-        keyfile: key_file,
-        certfile: cert_file,
-        cipher_suite: :strong,
-        startup_log: false,
-        http_1_options: [enabled: false],
-        http_2_options: [default_local_settings: [initial_window_size: 10]]
-      },
-      restart: :transient,
-      id: Bandit
-    )
-  end
-
   defp start_client do
     start_supervised!(
       {Client,
@@ -116,34 +115,36 @@ defmodule Tulle.Http2FuzzTest do
 
   @tag :integration
   @tag timeout: 120_000
-  property "fuzz req body, resp body, status against local server" do
+  property "fuzz req body, resp body, status against local server", context do
+    task_sv = start_link_supervised!(Task.Supervisor)
+
     check all(planned_req <- request_response_gen()) do
-      _bandit = start_server(planned_req)
       client = start_client()
+      :ets.delete_all_objects(context.planned_req_table)
+      :ets.insert(context.planned_req_table, Enum.to_list(planned_req))
 
-      planned_req
-      |> Task.async_stream(
-        fn {req_id, req_resp} ->
-          {status, _headers, resp_body} =
-            Http.request!(
-              client,
-              {:get, "/", [{"req_id", req_id}]},
-              req_resp.req_body
-            )
+      results =
+        for {req_id, req_resp} <- planned_req do
+          fn ->
+            {status, _headers, resp_body} =
+              Http.request!(
+                client,
+                {:get, "/", [{"req_id", req_id}]},
+                req_resp.req_body
+              )
 
-          assert status == req_resp.status
+            assert status == req_resp.status
 
-          assert IO.iodata_to_binary(Enum.to_list(resp_body)) ==
-                   IO.iodata_to_binary(req_resp.resp_body)
-        end,
-        max_concurrency: 50,
-        ordered: false,
-        timeout: :infinity
-      )
-      |> Stream.run()
+            assert IO.iodata_to_binary(Enum.to_list(resp_body)) ==
+                     IO.iodata_to_binary(req_resp.resp_body)
+          end
+        end
+        |> Enum.map(&Task.Supervisor.async_nolink(task_sv, &1))
+        |> Task.yield_many(on_timeout: :kill_task)
 
       stop_supervised!(Client)
-      stop_supervised!(Bandit)
+
+      assert Enum.all?(results, fn {_, res} -> match?({:ok, _}, res) end)
     end
   end
 
@@ -153,35 +154,37 @@ defmodule Tulle.Http2FuzzTest do
 
   @tag :integration
   @tag timeout: 120_000
-  property "fuzz streaming requests against local server" do
+  property "fuzz streaming requests against local server", context do
+    task_sv = start_link_supervised!(Task.Supervisor)
+
     check all(planned_req <- stream_request_response_gen()) do
-      _bandit = start_server(planned_req)
       client = start_client()
+      :ets.delete_all_objects(context.planned_req_table)
+      :ets.insert(context.planned_req_table, Enum.to_list(planned_req))
 
-      planned_req
-      |> Task.async_stream(
-        fn {req_id, req_resp} ->
-          collectable =
-            Http.request_collectable!(client, {:get, "/", [{"req_id", req_id}]})
+      results =
+        for {req_id, req_resp} <- planned_req do
+          fn ->
+            collectable =
+              Http.request_collectable!(client, {:get, "/", [{"req_id", req_id}]})
 
-          {status, _headers, resp_body} =
-            req_resp.req_body
-            |> Enum.into(collectable)
-            |> Http.close_request!()
+            {status, _headers, resp_body} =
+              req_resp.req_body
+              |> Enum.into(collectable)
+              |> Http.close_request!()
 
-          assert status == req_resp.status
+            assert status == req_resp.status
 
-          assert IO.iodata_to_binary(Enum.to_list(resp_body)) ==
-                   IO.iodata_to_binary(req_resp.resp_body)
-        end,
-        max_concurrency: 50,
-        ordered: false,
-        timeout: :infinity
-      )
-      |> Stream.run()
+            assert IO.iodata_to_binary(Enum.to_list(resp_body)) ==
+                     IO.iodata_to_binary(req_resp.resp_body)
+          end
+        end
+        |> Enum.map(&Task.Supervisor.async_nolink(task_sv, &1))
+        |> Task.yield_many(on_timeout: :kill_task)
 
       stop_supervised!(Client)
-      stop_supervised!(Bandit)
+
+      assert Enum.all?(results, fn {_, res} -> match?({:ok, _}, res) end)
     end
   end
 
