@@ -5,8 +5,6 @@
     "cases": [
         "*"
     ],
-    "exclude-cases": [
-        "6.*"
-    ],
+    "exclude-cases": [],
     "exclude-agent-cases": {}
 }

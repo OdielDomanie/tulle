@@ -336,17 +336,29 @@ defmodule Tulle.Websocket do
   def handle_info({:frame, ref, {:ping, msg}}, {:open, data}) when ref == data.ref do
     Logger.debug("Received ping, ponging: #{i(msg)}")
 
-    {conn, websocket} =
-      with {:ok, websocket, encoded} <- Ws.encode(data.websocket, {:pong, msg}),
-           {:ok, conn} <- Ws.stream_request_body(data.conn, data.ref, encoded) do
-        {conn, websocket}
-      else
-        {:error, conn, err} ->
-          Logger.warning("Can't send pong: #{i(err)}")
-          {conn, data.websocket}
-      end
+    case Ws.encode(data.websocket, {:pong, msg}) do
+      {:ok, websocket, encoded} ->
+        case Ws.stream_request_body(data.conn, data.ref, encoded) do
+          {:ok, conn} ->
+            {:noreply, {:open, %{data | conn: conn, websocket: websocket}}}
 
-    {:noreply, {:open, %{data | conn: conn, websocket: websocket}}}
+          {:error, conn, err} ->
+            Logger.error("Can't send pong: #{i(err)}")
+            {:noreply, {:open, %{data | conn: conn, websocket: websocket}}}
+        end
+
+      {:error, websocket, error} ->
+        Logger.warning("Can't encode pong: #{i(error)}")
+
+        case error do
+          %Mint.WebSocketError{reason: :payload_too_large} ->
+            reason = {:protocol_error, error}
+            {:stop, reason, {:open, %{data | websocket: websocket}}}
+
+          _ ->
+            {:noreply, {:open, %{data | websocket: websocket}}}
+        end
+    end
   end
 
   ### Receive data
@@ -390,10 +402,17 @@ defmodule Tulle.Websocket do
   end
 
   ### Receive errored frame
-  def handle_info({:frame, ref, {:error, reason}}, {:open, data})
+  def handle_info({:frame, ref, {:error, reason}}, {:open, data} = state)
       when ref == data.ref do
-    Logger.error("Could not decode frame: #{i(reason)}")
-    {:noreply, {:open, data}}
+    case reason do
+      {:invalid_utf8, _} ->
+        Logger.error("Could not decode frame: #{i(reason)}")
+        {:stop, {:invalid_data, reason}, state}
+
+      _ ->
+        Logger.error("Could not decode frame: #{i(reason)}")
+        {:stop, {:protocol_error, reason}, state}
+    end
   end
 
   ## Closing
@@ -479,9 +498,16 @@ defmodule Tulle.Websocket do
   def terminate(reason, {state, data}) do
     if state == :open and HTTP.open?(data.conn) do
       code =
-        if reason == :normal or reason == :shutdown or match?({:shutdown, _}, reason),
-          do: 1000,
-          else: 1011
+        case reason do
+          :normal -> 1000
+          :shutdown -> 1000
+          {:shutdown, {:code, code}} when code in 1000..4999 -> code
+          {:shutdown, _} -> 1000
+          {:protocol_error, _err} -> 1002
+          {:invalid_data, _err} -> 1007
+          {:code, code} when code in 1000..4999 -> code
+          _else -> 1011
+        end
 
       {:ok, _websocket, encoded} = Ws.encode(data.websocket, {:close, code, ""})
 

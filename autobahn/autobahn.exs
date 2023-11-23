@@ -12,33 +12,44 @@ defmodule Tulle.Autobahn do
 
     @impl GenServer
     def handle_cast({:text, ws, msg}, _) do
-      _ = Websocket.send(ws, :text, msg)
+      spawn(fn ->
+        _ = Websocket.send(ws, :text, msg)
+      end)
+
       {:noreply, nil}
     end
 
     def handle_cast({:binary, ws, msg}, _) do
-      _ = Websocket.send(ws, :binary, msg)
+      spawn(fn ->
+        _ = Websocket.send(ws, :binary, msg)
+      end)
 
       {:noreply, nil}
     end
 
     def handle_cast({:closed, ws, _close_code}, _) do
-      GenServer.stop(ws)
+      spawn(fn ->
+        GenServer.stop(ws)
+      end)
+
       {:noreply, nil}
     end
 
     def handle_cast({:warning, _ws, reason}, _) do
-      Logger.warning(inspect({:handle_warning, reason}))
+      spawn(fn ->
+        Logger.warning(inspect({:handle_warning, reason}))
+      end)
+
       {:noreply, nil}
     end
   end
 
-  def run() do
+  def run(from, to) do
     Logger.put_module_level(Tulle.Websocket, :info)
     {:ok, handler} = GenServer.start_link(__MODULE__.TestHandler, nil)
 
     Task.async_stream(
-      1..372,
+      from..to,
       fn i ->
         {_pid, ref} =
           spawn_monitor(fn -> run_case(handler, i) end)
@@ -56,6 +67,8 @@ defmodule Tulle.Autobahn do
     |> Stream.run()
 
     {:ok, ws} = Websocket.start_link(handler, [])
+
+    Process.sleep(2_000)
 
     :ok = Websocket.connect(ws, "http://127.0.0.1:9001/updateReports?agent=tulle", [])
   end
