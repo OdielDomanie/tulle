@@ -13,7 +13,7 @@ defmodule Tulle.Http do
   """
   @opaque request :: %Request{client: client(), ref: Mint.Types.request_ref()}
 
-  @type client :: GenServer.name()
+  @type client :: GenServer.server()
 
   @type req_params(method_alt) ::
           {method :: String.t() | method_alt, path :: String.t(), Mint.Types.headers()}

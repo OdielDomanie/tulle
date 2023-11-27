@@ -10,7 +10,7 @@ defmodule Tulle.Http1.Pool do
 
   @worker_idle_max 60_000
 
-  @type t :: GenServer.name()
+  @type t :: GenServer.server()
   @type worker :: pid
 
   def start_link(opts) do
@@ -59,7 +59,7 @@ defmodule Tulle.Http1.Pool do
         restart: :temporary
       )
 
-    with {:ok, worker} <- DynamicSupervisor.start_child(sv, spec) do
+    with {:ok, worker} <- DynamicSupervisor.start_child(sv.(), spec) do
       timer = set_timer(worker)
       Process.monitor(worker)
       {:ok, worker, timer}
