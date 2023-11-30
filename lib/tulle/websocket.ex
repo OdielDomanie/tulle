@@ -1,14 +1,6 @@
 defmodule Tulle.Websocket do
   @moduledoc """
   Websocket client, implemented as a Genserver.
-
-  Expects a message handler GenServer that can be `cast`ed with:
-
-  * `{:text, websocket_pid, msg :: binary}`
-  * `{:binary, websocket_pid, msg :: binary}`
-  * `{:closed, websocket_pid, close_code :: non_neg_integer() | nil}`
-  * `{:warning, websocket_pid, reason :: any}`
-
   """
 
   require Mint.HTTP
@@ -19,11 +11,29 @@ defmodule Tulle.Websocket do
 
   use GenServer
 
+  @callback handle_message(type :: :text | :binary, binary, any) :: result_handle
+  @callback handle_close(close_code :: 1000..4999 | nil, any) :: result_handle
+  @callback handle_warning(reason :: {:ping_timeout, non_neg_integer()}, any) :: result_handle
+
+  # | {:close, code :: 1000..4999 | nil} | {:send, :text | :binary, [binary]}
+  @type result_handle :: :ok
+
+  defmacro __using__(arg) do
+    quote do
+      @behaviour Tulle.Websocket
+
+      def child_spec(arg) do
+        Tulle.Websocket.child_spec(arg)
+        |> Supervisor.child_spec(unquote(arg))
+      end
+    end
+  end
+
   @ping_interval 10_000
 
-  @spec start_link(GenServer.server(), GenServer.options()) :: GenServer.on_start()
-  def start_link(msg_handler, opts) do
-    GenServer.start_link(__MODULE__, msg_handler, opts)
+  @spec start_link({module(), any, GenServer.options()}) :: GenServer.on_start()
+  def start_link({msg_handler, custom_data, opts}) do
+    GenServer.start_link(__MODULE__, {msg_handler, custom_data}, opts)
   end
 
   @spec connect(
@@ -50,9 +60,9 @@ defmodule Tulle.Websocket do
   end
 
   @impl GenServer
-  def init(msg_handler) do
+  def init({msg_handler, cust_data}) do
     Process.flag(:trap_exit, true)
-    data = %{msg_handler: msg_handler}
+    data = %{msg_handler: msg_handler, cust_data: cust_data}
     {:ok, {:closed, data}}
   end
 
@@ -273,14 +283,10 @@ defmodule Tulle.Websocket do
   ### Send ping
   @impl GenServer
   def handle_info({:ping_time, ref}, {:open, %{ref: ref} = data}) do
-    unless data.pong_received do
-      Logger.warning("Websocket ping timed out.")
+    Logger.warning("Websocket ping timed out.")
 
-      GenServer.cast(
-        data.msg_handler,
-        {:warning, self(), {:ping_timeout, @ping_interval}}
-      )
-    end
+    :ok =
+      apply(data.msg_handler, :handle_warning, [{:ping_timeout, @ping_interval}, data.cust_data])
 
     {:ok, websocket, encoded} = Ws.encode(data.websocket, :ping)
 
@@ -302,7 +308,7 @@ defmodule Tulle.Websocket do
       {:noreply, {:open, data}}
     else
       Logger.warning("Connection closed unexpectedly.")
-      GenServer.cast(data.msg_handler, {:closed, self(), nil})
+      :ok = apply(data.msg_handler, :handle_closed, [nil, data.cust_data])
       {:noreply, {:closed, %{data | conn: conn}}}
     end
   end
@@ -365,14 +371,16 @@ defmodule Tulle.Websocket do
   @impl GenServer
   def handle_info({:frame, ref, {:text, msg}}, {:open, data}) when ref == data.ref do
     Logger.debug("Received text data, #{i(binary_slice(msg, 1..10))}")
-    GenServer.cast(data.msg_handler, {:text, self(), msg})
+
+    :ok = apply(data.msg_handler, :handle_message, [:text, msg, data.cust_data])
+
     {:noreply, {:open, data}}
   end
 
   @impl GenServer
   def handle_info({:frame, ref, {:binary, msg}}, {:open, data}) when ref == data.ref do
     Logger.debug("Received binary data, #{i(binary_slice(msg, 1..10))}")
-    GenServer.cast(data.msg_handler, {:binary, self(), msg})
+    :ok = apply(data.msg_handler, :handle_message, [:binary, msg, data.cust_data])
     {:noreply, {:open, data}}
   end
 
@@ -394,7 +402,7 @@ defmodule Tulle.Websocket do
           conn
       end
 
-    GenServer.cast(data.msg_handler, {:closed, self(), code})
+    :ok = apply(data.msg_handler, :handle_close, [code, data.cust_data])
 
     data = %{data | conn: conn, websocket: websocket}
 
@@ -425,7 +433,7 @@ defmodule Tulle.Websocket do
     {:ok, conn} = HTTP.close(data.conn)
     GenServer.reply(from, {:ok, :timeout})
 
-    GenServer.cast(data.msg_handler, {:closed, self(), nil})
+    :ok = apply(data.msg_handler, :handle_close, [nil, data.cust_data])
 
     {:noreply, {:closed, %{data | conn: conn}}}
   end
@@ -447,7 +455,7 @@ defmodule Tulle.Websocket do
     Logger.debug("Received back close #{code}")
 
     Process.cancel_timer(data.close_timer)
-    GenServer.cast(data.msg_handler, {:closed, self(), code})
+    :ok = apply(data.msg_handler, :handle_closed, [code, data.cust_data])
 
     GenServer.reply(from, {:ok, code})
 
