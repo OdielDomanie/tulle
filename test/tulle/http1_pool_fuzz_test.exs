@@ -89,7 +89,7 @@ defmodule Tulle.Http1PoolFuzzTest do
 
     start_supervised!(
       {Http1.Pool,
-       sv: sv,
+       sv: fn -> sv end,
        address: "127.0.0.1",
        port: @port,
        connect_opts: [
