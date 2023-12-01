@@ -11,16 +11,9 @@ defmodule Tulle.Websocket do
 
   use GenServer
 
-  @callback handle_message(type :: :text | :binary, binary, any) :: result_handle
-  @callback handle_close(close_code :: 1000..4999 | nil, any) :: result_handle
-  @callback handle_warning(reason :: {:ping_timeout, non_neg_integer()}, any) :: result_handle
-
-  # | {:close, code :: 1000..4999 | nil} | {:send, :text | :binary, [binary]}
-  @type result_handle :: :ok
-
   defmacro __using__(arg) do
     quote do
-      @behaviour Tulle.Websocket
+      @behaviour WebSock
 
       def child_spec(arg) do
         Tulle.Websocket.child_spec(arg)
@@ -31,20 +24,19 @@ defmodule Tulle.Websocket do
 
   @ping_interval 10_000
 
-  @spec start_link({module(), any, GenServer.options()}) :: GenServer.on_start()
-  def start_link({msg_handler, custom_data, opts}) do
-    GenServer.start_link(__MODULE__, {msg_handler, custom_data}, opts)
-  end
+  @typedoc """
+  Must have `:url`, optionally can have `:headers` and `:extensions`.
+  (defaults to `PerMessageDeflate`).
+  """
+  @type conn_opts :: Access.t()
 
-  @spec connect(
-          GenServer.server(),
-          String.t() | URI.t(),
-          Mint.Types.headers(),
-          [module()]
-        ) ::
-          :ok | {:error, term}
-  def connect(ws, url, headers, extensions \\ [Ws.PerMessageDeflate]) do
-    GenServer.call(ws, {:connect, url, headers, extensions})
+  @spec start_link(WebSock.impl(), any, conn_opts, GenServer.options()) ::
+          GenServer.on_start()
+  def start_link(module, init_args, conn_opts, opts \\ []) do
+    url = conn_opts[:url]
+    headers = conn_opts[:headers] || []
+    extensions = conn_opts[:extensions] || [Ws.PerMessageDeflate]
+    GenServer.start_link(__MODULE__, {module, init_args, {url, headers, extensions}}, opts)
   end
 
   @spec send(GenServer.server(), :binary | :text, binary() | String.t()) ::
@@ -53,22 +45,16 @@ defmodule Tulle.Websocket do
     GenServer.call(ws, {:send, type, msg})
   end
 
-  @spec close(GenServer.server(), pos_integer() | nil) ::
-          :ok | {:ok, :timeout | term} | {:error, term}
-  def close(ws, code) do
-    GenServer.call(ws, {:close, code})
-  end
-
   @impl GenServer
-  def init({msg_handler, cust_data}) do
+  def init({msg_handler, cust_data, {url, headers, extensions}}) do
     Process.flag(:trap_exit, true)
     data = %{msg_handler: msg_handler, cust_data: cust_data}
-    {:ok, {:closed, data}}
+    {:ok, {:closed, data}, {:continue, {:connect, url, headers, extensions}}}
   end
 
-  ## Connect call ##
+  ## Connect ##
   @impl GenServer
-  def handle_call({:connect, url, headers, extensions}, from, {:closed, data}) do
+  def handle_continue({:connect, url, headers, extensions}, {:closed, data}) do
     url = URI.new!(url)
     domain = url.host
 
@@ -111,6 +97,9 @@ defmodule Tulle.Websocket do
            ) do
       Logger.debug("Sent Websocket upgrade request")
       data = merge(data, %{conn: conn, ref: ref, domain: domain})
+
+      # spagetthi!
+      from = nil
       timer = Process.send_after(self(), {:handshake_timeout, from}, 10_000)
 
       {:noreply, {[:waiting_hs_resp, from], put(data, :hs_timer, timer)}}
@@ -118,26 +107,23 @@ defmodule Tulle.Websocket do
     else
       {:error, reason} ->
         Logger.error("Could not connect to #{i(domain)}, #{i(reason)}")
-        {:reply, {:error, reason}, {:closed, data}}
+        {:stop, reason, {:closed, data}}
 
       {:error, conn, reason} ->
         Logger.error("Could not send upgrade request to #{i(domain)}, #{i(reason)}")
-        {:reply, {:error, reason}, {:closed, put(data, :conn, conn)}}
+        {:stop, reason, {:closed, put(data, :conn, conn)}}
     end
   end
 
   ## Send call ##
   @impl GenServer
   def handle_call({:send, type, msg}, _from, {:open, data}) do
-    Logger.debug("Sending msg")
-    {:ok, websocket, encoded} = Ws.encode(data.websocket, {type, msg})
+    case do_send(data, type, msg) do
+      {:ok, data} ->
+        {:reply, :ok, {:open, data}}
 
-    case Ws.stream_request_body(data.conn, data.ref, encoded) do
-      {:ok, conn} ->
-        {:reply, :ok, {:open, %{data | conn: conn, websocket: websocket}}}
-
-      {:error, conn, err} ->
-        {:reply, {:error, err}, {:open, %{data | conn: conn, websocket: websocket}}}
+      {:error, data, err} ->
+        {:reply, {:error, err}, {:open, data}}
     end
   end
 
@@ -202,8 +188,8 @@ defmodule Tulle.Websocket do
         {[:waiting_hs_resp, from | _], data}
       ) do
     Logger.error("Websocket handshake timed-out")
-    GenServer.reply(from, {:error, :timeout})
-    {:noreply, {:closed, data}}
+    # GenServer.reply(from, {:error, :timeout})
+    {:stop, :handshake_timeout, {:closed, data}}
   end
 
   ## Process the responses
@@ -229,8 +215,9 @@ defmodule Tulle.Websocket do
       {:error, conn, error} ->
         Logger.error("Error when creating websocket: #{i(error)}")
         Process.cancel_timer(data.hs_timer)
-        GenServer.reply(from, {:error, error})
-        {:noreply, {:closed, %{data | conn: conn}}}
+        # GenServer.reply(from, {:error, error})
+        # {:noreply, {:closed, %{data | conn: conn}}}
+        {:stop, error, {:closed, %{data | conn: conn}}}
     end
   end
 
@@ -252,14 +239,14 @@ defmodule Tulle.Websocket do
   def handle_info(
         {:resp, {:done, ref}},
         {
-          [:waiting_hs_resp, from, _status, _headers, :ws_created],
+          [:waiting_hs_resp, _from, _status, _headers, :ws_created],
           %{ref: ref} = data
         }
       ) do
     Logger.debug("Handshake OK")
     Logger.debug("Creating ping timer.")
     Process.cancel_timer(data.hs_timer)
-    GenServer.reply(from, :ok)
+    # GenServer.reply(from, :ok)
     ping_timer = Process.send_after(self(), {:ping_time, ref}, @ping_interval)
     data = put(data, :ping_timer, ping_timer)
     data = put(data, :pong_received, true)
@@ -275,19 +262,13 @@ defmodule Tulle.Websocket do
           data
       end
 
-    {:noreply, {:open, data}}
+    do_callback(data, :init, [data.cust_data])
   end
 
   ## Open
 
   ### Send ping
-  @impl GenServer
-  def handle_info({:ping_time, ref}, {:open, %{ref: ref} = data}) do
-    Logger.warning("Websocket ping timed out.")
-
-    :ok =
-      apply(data.msg_handler, :handle_warning, [{:ping_timeout, @ping_interval}, data.cust_data])
-
+  def handle_info({:ping_time, ref}, {:open, %{ref: ref, pong_received: true} = data}) do
     {:ok, websocket, encoded} = Ws.encode(data.websocket, :ping)
 
     conn =
@@ -303,18 +284,17 @@ defmodule Tulle.Websocket do
 
     data = merge(data, %{pong_received: false, conn: conn, websocket: websocket})
 
-    if HTTP.open?(conn) do
-      Process.send_after(self(), {:ping_time, ref}, @ping_interval)
-      {:noreply, {:open, data}}
-    else
-      Logger.warning("Connection closed unexpectedly.")
-      :ok = apply(data.msg_handler, :handle_closed, [nil, data.cust_data])
-      {:noreply, {:closed, %{data | conn: conn}}}
-    end
+    Process.send_after(self(), {:ping_time, ref}, @ping_interval)
+    {:noreply, {:open, data}}
+  end
+
+  def handle_info({:ping_time, ref}, {:open, %{ref: ref, pong_received: false} = data}) do
+    Logger.error("Websocket pong timed out.")
+
+    {:stop, {:protocol_error, :pong_timeout}, data}
   end
 
   ### Receive msgs, send self each frame
-  @impl GenServer
   def handle_info(msg, {:open, %{conn: conn} = data})
       when HTTP.is_connection_message(conn, msg) do
     # if stream/2 returns error, ignore
@@ -372,16 +352,13 @@ defmodule Tulle.Websocket do
   def handle_info({:frame, ref, {:text, msg}}, {:open, data}) when ref == data.ref do
     Logger.debug("Received text data, #{i(binary_slice(msg, 1..10))}")
 
-    :ok = apply(data.msg_handler, :handle_message, [:text, msg, data.cust_data])
-
-    {:noreply, {:open, data}}
+    do_callback(data, :handle_in, [{msg, [opcode: :text]}, data.cust_data])
   end
 
   @impl GenServer
   def handle_info({:frame, ref, {:binary, msg}}, {:open, data}) when ref == data.ref do
     Logger.debug("Received binary data, #{i(binary_slice(msg, 1..10))}")
-    :ok = apply(data.msg_handler, :handle_message, [:binary, msg, data.cust_data])
-    {:noreply, {:open, data}}
+    do_callback(data, :handle_in, [{msg, [opcode: :binary]}, data.cust_data])
   end
 
   ### Receive close
@@ -402,11 +379,9 @@ defmodule Tulle.Websocket do
           conn
       end
 
-    :ok = apply(data.msg_handler, :handle_close, [code, data.cust_data])
-
     data = %{data | conn: conn, websocket: websocket}
 
-    {:noreply, {:closed, data}}
+    {:stop, {:shutdown, {:remote, reason}}, {:closed, data}}
   end
 
   ### Receive errored frame
@@ -435,7 +410,7 @@ defmodule Tulle.Websocket do
 
     :ok = apply(data.msg_handler, :handle_close, [nil, data.cust_data])
 
-    {:noreply, {:closed, %{data | conn: conn}}}
+    {:stop, :shutdown, {:closed, %{data | conn: conn}}}
   end
 
   ### Receive msgs, send self each frame
@@ -459,7 +434,7 @@ defmodule Tulle.Websocket do
 
     GenServer.reply(from, {:ok, code})
 
-    {:noreply, {:closed, data}}
+    {:stop, :shutdown, {:closed, data}}
   end
 
   ### Catch-all
@@ -498,7 +473,7 @@ defmodule Tulle.Websocket do
   @impl GenServer
   def handle_info(msg, {state, data}) do
     Logger.warning("Received unhandled message #{i(msg)} when state is #{i(state)}")
-    {:noreply, {state, data}}
+    do_callback(data, :handle_info, [msg, data.cust_data], state)
   end
 
   ### Terminate handler
@@ -524,9 +499,108 @@ defmodule Tulle.Websocket do
         {:error, _conn, err} -> Logger.warning("Can't send close: #{i(err)}")
       end
     end
+
+    call_terminate(data.msg_handler, reason, data.cust_data)
   end
 
   ### Helper funs
+
+  defp call_terminate(msg_handler, reason, cust_data) do
+    callback_reason =
+      case reason do
+        :normal -> :normal
+        {:shutdown, {:remote, _}} -> :remote
+        {:shutdown, _} -> :shutdown
+        :shutdown -> :shutdown
+        {:protocol_error, :pong_timeout} -> :timeout
+        reason -> {:error, reason}
+      end
+
+    _ = apply(msg_handler, :terminate, [callback_reason, cust_data])
+  end
+
+  defp do_callback(data, fun, args, state \\ :open) do
+    case apply(data.msg_handler, fun, args) do
+      {:ok, cust_data} ->
+        data = %{data | cust_data: cust_data}
+        {:noreply, {state, data}}
+
+      {:push, msgs, cust_data} when is_list(msgs) ->
+        data = %{data | cust_data: cust_data}
+
+        case send_multiple(data, msgs) do
+          {:ok, data} ->
+            {:noreply, {state, data}}
+
+          {:error, data, err} ->
+            {:stop, err, {state, data}}
+        end
+
+      {:push, {type, content}, cust_data} ->
+        data = %{data | cust_data: cust_data}
+
+        case do_send(data, type, content) do
+          {:ok, data} ->
+            {:noreply, {state, data}}
+
+          {:error, data, err} ->
+            {:stop, err, {state, data}}
+        end
+
+      {:stop, reason, cust_data} ->
+        data = %{data | cust_data: cust_data}
+        {:stop, reason, {state, data}}
+
+      {:stop, _reason, code, cust_data} ->
+        data = %{data | cust_data: cust_data}
+        {:stop, {:code, code}, {state, data}}
+
+      {:stop, _reason, code, cust_data, msgs} when is_list(msgs) ->
+        data = %{data | cust_data: cust_data}
+
+        case send_multiple(data, msgs) do
+          {:ok, data} ->
+            {:stop, {:code, code}, {state, data}}
+
+          {:error, data, err} ->
+            {:stop, err, {state, data}}
+        end
+
+      {:stop, _reason, code, cust_data, {type, content}} ->
+        data = %{data | cust_data: cust_data}
+
+        case do_send(data, type, content) do
+          {:ok, data} ->
+            {:stop, {:code, code}, {state, data}}
+
+          {:error, data, err} ->
+            {:stop, err, {:open, data}}
+        end
+    end
+  end
+
+  defp do_send(data, type, msg) do
+    Logger.debug("Sending msg")
+
+    {:ok, websocket, encoded} = Ws.encode(data.websocket, {type, msg})
+
+    case Ws.stream_request_body(data.conn, data.ref, encoded) do
+      {:ok, conn} ->
+        {:ok, %{data | conn: conn, websocket: websocket}}
+
+      {:error, conn, err} ->
+        {:error, %{data | conn: conn, websocket: websocket}, err}
+    end
+  end
+
+  defp send_multiple(data, []), do: {:ok, data}
+
+  defp send_multiple(data, [{type, content} | rest]) do
+    case do_send(data, type, content) do
+      {:ok, data} -> send_multiple(data, rest)
+      {:error, _data, _err} = err_tuple -> err_tuple
+    end
+  end
 
   @dialyzer {:no_opaque, parse_msg: 4}
   @dialyzer {:no_return, parse_msg: 4}

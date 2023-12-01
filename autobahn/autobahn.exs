@@ -9,83 +9,33 @@ defmodule Tulle.Autobahn do
 
     use Websocket
 
-    def start_link(opts) do
-      Websocket.start_link({__MODULE__, nil, opts})
+    def start_link({url_headers_extension, opts}) do
+      Websocket.start_link(__MODULE__, nil, url_headers_extension, opts)
     end
 
-    @impl Websocket
-    def handle_message(type, msg, _any) do
-      this = self()
-
-      spawn(fn ->
-        _ = Websocket.send(this, type, msg)
-      end)
-
-      :ok
+    @impl WebSock
+    def init(_) do
+      {:ok, nil}
     end
 
-    @impl Websocket
-    def handle_warning(reason, _any) do
-      spawn(fn ->
-        Logger.warning(inspect({:handle_warning, reason}))
-      end)
-
-      :ok
+    @impl WebSock
+    def handle_in({msg, [opcode: type]}, state) do
+      {:push, {type, msg}, state}
     end
 
-    @impl Websocket
-    def handle_close(_close_code, _any) do
-      this = self()
-
-      spawn(fn ->
-        GenServer.stop(this)
-      end)
-
-      :ok
+    @impl WebSock
+    def terminate(_reason, _state) do
+      nil
     end
 
-    # @impl GenServer
-    # def init(_) do
-    #   {:ok, nil}
-    # end
-
-    # @impl GenServer
-    # def handle_cast({:text, ws, msg}, _) do
-    #   spawn(fn ->
-    #     _ = Websocket.send(ws, :text, msg)
-    #   end)
-
-    #   {:noreply, nil}
-    # end
-
-    # def handle_cast({:binary, ws, msg}, _) do
-    #   spawn(fn ->
-    #     _ = Websocket.send(ws, :binary, msg)
-    #   end)
-
-    #   {:noreply, nil}
-    # end
-
-    # def handle_cast({:closed, ws, _close_code}, _) do
-    #   spawn(fn ->
-    #     GenServer.stop(ws)
-    #   end)
-
-    #   {:noreply, nil}
-    # end
-
-    # def handle_cast({:warning, _ws, reason}, _) do
-    #   spawn(fn ->
-    #     Logger.warning(inspect({:handle_warning, reason}))
-    #   end)
-
-    #   {:noreply, nil}
-    # end
+    @impl WebSock
+    def handle_info(_term, state) do
+      {:ok, state}
+    end
   end
 
   def run(from, to) do
     Logger.put_module_level(Tulle.Websocket, :info)
-    # {:ok, handler} = GenServer.start_link(__MODULE__.TestHandler, nil)
 
     Task.async_stream(
       from..to,
@@ -96,8 +46,6 @@ defmodule Tulle.Autobahn do
         receive do
           {:DOWN, ^ref, _, _, _} ->
             nil
-            # after
-            #   0 -> nil
         end
       end,
       timeout: 300_000,
@@ -105,27 +53,20 @@ defmodule Tulle.Autobahn do
     )
     |> Stream.run()
 
-    {:ok, ws} = TestHandler.start_link([])
-
     Process.sleep(2_000)
 
-    :ok = Websocket.connect(ws, "http://127.0.0.1:9001/updateReports?agent=tulle", [])
+    {:ok, ws} =
+      TestHandler.start_link({[url: "http://127.0.0.1:9001/updateReports?agent=tulle"], []})
   end
 
   defp run_case(i) do
-    {:ok, ws} = TestHandler.start_link([])
+    {:ok, ws} =
+      TestHandler.start_link({[url: "http://127.0.0.1:9001/runCase?case=#{i}&agent=tulle"], []})
 
-    Websocket.connect(ws, "http://127.0.0.1:9001/runCase?case=#{i}&agent=tulle", [])
-    |> case do
-      :ok ->
-        ref = Process.monitor(ws)
+    ref = Process.monitor(ws)
 
-        receive do
-          {:DOWN, ^ref, _, _, _} -> nil
-        end
-
-      _ ->
-        nil
+    receive do
+      {:DOWN, ^ref, _, _, _} -> nil
     end
   end
 end
