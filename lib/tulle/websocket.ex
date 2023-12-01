@@ -509,7 +509,7 @@ defmodule Tulle.Websocket do
     callback_reason =
       case reason do
         :normal -> :normal
-        {:shutdown, {:remote, _}} -> :remote
+        {:shutdown, {:remote, {code, reason}}} -> {:remote, {code, reason}}
         {:shutdown, _} -> :shutdown
         :shutdown -> :shutdown
         {:protocol_error, :pong_timeout} -> :timeout
