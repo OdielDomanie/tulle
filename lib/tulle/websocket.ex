@@ -505,16 +505,32 @@ defmodule Tulle.Websocket do
 
   ### Helper funs
 
+  @doc """
+  Transform exit reason to a more summary format.
+
+  Returns `{:remote, {code, reason}}` for remote initiated shutdown,
+  `:normal` or `:shutdown` for user initiated shutdown,
+  `:timeout` for pong timeout,
+  or `{:error, reason}` for errors such as network or protocol errors.
+
+  Almost compatible with `Websock.terminate/2` v0.5 callback.
+  """
+  def exit_reason_meaning(reason) do
+    case reason do
+      :normal -> :normal
+      {:shutdown, {:remote, {code, reason}}} -> {:remote, {code, reason}}
+      {:shutdown, _} -> :shutdown
+      :shutdown -> :shutdown
+      {:protocol_error, :pong_timeout} -> :timeout
+      reason -> {:error, reason}
+    end
+  end
+
   defp call_terminate(msg_handler, reason, cust_data) do
-    callback_reason =
-      case reason do
-        :normal -> :normal
-        {:shutdown, {:remote, {code, reason}}} -> {:remote, {code, reason}}
-        {:shutdown, _} -> :shutdown
-        :shutdown -> :shutdown
-        {:protocol_error, :pong_timeout} -> :timeout
-        reason -> {:error, reason}
-      end
+    # Not websock compatible, but close enough.
+    # Websock behaviour does not provide a way to communicate
+    # remote close code, which is a bug on their side tbh smh
+    callback_reason = exit_reason_meaning(reason)
 
     _ = apply(msg_handler, :terminate, [callback_reason, cust_data])
   end
