@@ -23,7 +23,6 @@ defmodule Tulle.MixProject do
     [
       {:mint, "~> 1.0"},
       {:mint_web_socket, "~> 1.0.3"},
-      {:websock, "~> 0.5.3"},
       {:deep_merge, "~> 1.0"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:stream_data, "~> 0.6", only: [:test]},

@@ -13,24 +13,19 @@ defmodule Tulle.Autobahn do
       Websocket.start_link(__MODULE__, nil, url_headers_extension, opts)
     end
 
-    @impl WebSock
-    def init(_) do
+    @impl Websocket
+    def handle_connect(_) do
       {:ok, nil}
     end
 
-    @impl WebSock
-    def handle_in({msg, [opcode: type]}, state) do
+    @impl Websocket
+    def handle_in({type, msg}, state) do
       {:push, {type, msg}, state}
     end
 
-    @impl WebSock
-    def terminate(_reason, _state) do
+    @impl Websocket
+    def handle_remote_close(_code, _reason, _state) do
       nil
-    end
-
-    @impl WebSock
-    def handle_info(_term, state) do
-      {:ok, state}
     end
   end
 
@@ -55,7 +50,7 @@ defmodule Tulle.Autobahn do
 
     Process.sleep(2_000)
 
-    {:ok, ws} =
+    {:ok, _ws} =
       TestHandler.start_link({[url: "http://127.0.0.1:9001/updateReports?agent=tulle"], []})
   end
 

@@ -11,13 +11,28 @@ defmodule Tulle.Websocket do
 
   use GenServer
 
-  defmacro __using__(arg) do
-    quote do
-      @behaviour WebSock
+  @type handle_result ::
+          {:ok, state :: any}
+          | {:push, message() | [message()], state :: any}
+          | {:close, code | {code, binary}, state :: any}
+  @type message :: {:text | :binary, binary}
+  @type code :: 1000..4999
 
-      def child_spec(arg) do
-        Tulle.Websocket.child_spec(arg)
-        |> Supervisor.child_spec(unquote(arg))
+  @callback handle_connect(state :: any) :: handle_result()
+  @callback handle_in(message, state :: any) :: handle_result()
+  @callback handle_remote_close(code | nil, reason :: binary | nil, state :: any) :: any
+
+  defmacro __using__(opts) do
+    quote do
+      @behaviour Tulle.Websocket
+
+      def child_spec(init_arg) do
+        default = %{
+          id: __MODULE__,
+          start: {__MODULE__, :start_link, [init_arg]}
+        }
+
+        Supervisor.child_spec(default, unquote(Macro.escape(opts)))
       end
     end
   end
@@ -130,22 +145,14 @@ defmodule Tulle.Websocket do
   ## Close call ##
   @impl GenServer
   def handle_call({:close, code}, from, {:open, data}) do
-    Logger.debug("Initiating closing with #{code}.")
-    {:ok, websocket, encoded} = Ws.encode(data.websocket, {:close, code, ""})
+    case do_send_close(code, nil, data) do
+      {:ok, data} ->
+        {:noreply, {{:closing, from}, data}}
 
-    conn =
-      case Ws.stream_request_body(data.conn, data.ref, encoded) do
-        {:ok, conn} ->
-          conn
-
-        {:error, conn, err} ->
-          Logger.warning("Can't send close: #{i(err)}")
-          conn
-      end
-
-    close_timer = Process.send_after(self(), {:close_timeout, data.ref}, 2_000)
-    data = merge(data, %{close_timer: close_timer, conn: conn, websocket: websocket})
-    {:noreply, {{:closing, from}, data}}
+      {:error, data, err} ->
+        GenServer.reply(from, {:unclean, err})
+        {:stop, err, data}
+    end
   end
 
   ## Catch-all call ##
@@ -239,14 +246,13 @@ defmodule Tulle.Websocket do
   def handle_info(
         {:resp, {:done, ref}},
         {
-          [:waiting_hs_resp, _from, _status, _headers, :ws_created],
+          [:waiting_hs_resp, _from, _status, _headers, :ws_created] = status,
           %{ref: ref} = data
         }
       ) do
     Logger.debug("Handshake OK")
     Logger.debug("Creating ping timer.")
     Process.cancel_timer(data.hs_timer)
-    # GenServer.reply(from, :ok)
     ping_timer = Process.send_after(self(), {:ping_time, ref}, @ping_interval)
     data = put(data, :ping_timer, ping_timer)
     data = put(data, :pong_received, true)
@@ -262,7 +268,8 @@ defmodule Tulle.Websocket do
           data
       end
 
-    do_callback(data, :init, [data.cust_data])
+    apply(data.msg_handler, :handle_connect, [data.cust_data])
+    |> do_handle_result({status, data})
   end
 
   ## Open
@@ -352,13 +359,16 @@ defmodule Tulle.Websocket do
   def handle_info({:frame, ref, {:text, msg}}, {:open, data}) when ref == data.ref do
     Logger.debug("Received text data, #{i(binary_slice(msg, 1..10))}")
 
-    do_callback(data, :handle_in, [{msg, [opcode: :text]}, data.cust_data])
+    apply(data.msg_handler, :handle_in, [{:text, msg}, data.cust_data])
+    |> do_handle_result({:open, data})
   end
 
   @impl GenServer
   def handle_info({:frame, ref, {:binary, msg}}, {:open, data}) when ref == data.ref do
     Logger.debug("Received binary data, #{i(binary_slice(msg, 1..10))}")
-    do_callback(data, :handle_in, [{msg, [opcode: :binary]}, data.cust_data])
+
+    apply(data.msg_handler, :handle_in, [{:binary, msg}, data.cust_data])
+    |> do_handle_result({:open, data})
   end
 
   ### Receive close
@@ -381,7 +391,9 @@ defmodule Tulle.Websocket do
 
     data = %{data | conn: conn, websocket: websocket}
 
-    {:stop, {:shutdown, {:remote, reason}}, {:closed, data}}
+    _ = apply(data.msg_handler, :handle_close, [code, reason, data.cust_data])
+
+    {:stop, :normal, {:closed, data}}
   end
 
   ### Receive errored frame
@@ -406,11 +418,10 @@ defmodule Tulle.Websocket do
     Logger.warning("Timed out waiting for server close response.")
     Logger.info("Connection closed: #{i(nil)}")
     {:ok, conn} = HTTP.close(data.conn)
-    GenServer.reply(from, {:ok, :timeout})
 
-    :ok = apply(data.msg_handler, :handle_close, [nil, data.cust_data])
+    if from, do: GenServer.reply(from, {:ok, :timeout})
 
-    {:stop, :shutdown, {:closed, %{data | conn: conn}}}
+    {:stop, :normal, {:closed, %{data | conn: conn}}}
   end
 
   ### Receive msgs, send self each frame
@@ -423,18 +434,17 @@ defmodule Tulle.Websocket do
     {:noreply, {{:closing, from}, %{data | conn: conn, websocket: websocket}}}
   end
 
-  ### Receive close
+  ### Receive close as reply
   @impl GenServer
   def handle_info({:frame, ref, {:close, code, _reason}}, {{:closing, from}, data})
       when ref == data.ref do
     Logger.debug("Received back close #{code}")
 
     Process.cancel_timer(data.close_timer)
-    :ok = apply(data.msg_handler, :handle_closed, [code, data.cust_data])
 
-    GenServer.reply(from, {:ok, code})
+    if from, do: GenServer.reply(from, {:ok, code})
 
-    {:stop, :shutdown, {:closed, data}}
+    {:stop, :normal, {:closed, data}}
   end
 
   ### Catch-all
@@ -471,127 +481,106 @@ defmodule Tulle.Websocket do
   end
 
   @impl GenServer
-  def handle_info(msg, {state, data}) do
-    Logger.warning("Received unhandled message #{i(msg)} when state is #{i(state)}")
-    do_callback(data, :handle_info, [msg, data.cust_data], state)
+  def handle_info(msg, {status, data}) do
+    Logger.warning("Received unhandled message #{i(msg)} when state is #{i(status)}")
+    {:noreply, {status, data}}
   end
 
   ### Terminate handler
   @impl GenServer
-  def terminate(reason, {state, data}) do
-    if state == :open and HTTP.open?(data.conn) do
-      code =
-        case reason do
-          :normal -> 1000
-          :shutdown -> 1000
-          {:shutdown, {:code, code}} when code in 1000..4999 -> code
-          {:shutdown, _} -> 1000
-          {:protocol_error, _err} -> 1002
-          {:invalid_data, _err} -> 1007
-          {:code, code} when code in 1000..4999 -> code
-          _else -> 1011
-        end
-
-      {:ok, _websocket, encoded} = Ws.encode(data.websocket, {:close, code, ""})
-
-      case Ws.stream_request_body(data.conn, data.ref, encoded) do
-        {:ok, _conn} -> Logger.debug("Sent close with #{i(code)}.")
-        {:error, _conn, err} -> Logger.warning("Can't send close: #{i(err)}")
+  def terminate(reason, {:open, data}) do
+    code =
+      case reason do
+        :normal -> 1000
+        :shutdown -> 1000
+        {:shutdown, {:code, code}} when code in 1000..4999 -> code
+        {:shutdown, _} -> 1000
+        {:protocol_error, _err} -> 1002
+        {:invalid_data, _err} -> 1007
+        {:code, code} when code in 1000..4999 -> code
+        _else -> 1011
       end
-    end
 
-    call_terminate(data.msg_handler, reason, data.cust_data)
+    {:ok, _websocket, encoded} = Ws.encode(data.websocket, {:close, code, ""})
+
+    Logger.info("Closing the websocket with #{code}")
+
+    case Ws.stream_request_body(data.conn, data.ref, encoded) do
+      {:ok, _conn} -> Logger.debug("Sent close with #{i(code)}.")
+      {:error, _conn, err} -> Logger.warning("Can't send close: #{i(err)}")
+    end
+  end
+
+  def terminate(_reason, {_status, _data}) do
   end
 
   ### Helper funs
 
-  @doc """
-  Transform exit reason to a more summary format.
+  defp do_handle_result({:ok, cust_data}, {status, data}) do
+    data = %{data | cust_data: cust_data}
+    {:noreply, {status, data}}
+  end
 
-  Returns `{:remote, {code, reason}}` for remote initiated shutdown,
-  `:normal` or `:shutdown` for user initiated shutdown,
-  `:timeout` for pong timeout,
-  or `{:error, reason}` for errors such as network or protocol errors.
+  defp do_handle_result({:push, msgs, cust_data}, {status, data}) when is_list(msgs) do
+    data = %{data | cust_data: cust_data}
 
-  Almost compatible with `Websock.terminate/2` v0.5 callback.
-  """
-  def exit_reason_meaning(reason) do
-    case reason do
-      :normal -> :normal
-      {:shutdown, {:remote, {code, reason}}} -> {:remote, {code, reason}}
-      {:shutdown, _} -> :shutdown
-      :shutdown -> :shutdown
-      {:protocol_error, :pong_timeout} -> :timeout
-      reason -> {:error, reason}
+    case send_multiple(data, msgs) do
+      {:ok, data} ->
+        {:noreply, {status, data}}
+
+      {:error, data, err} ->
+        {:stop, err, {status, data}}
     end
   end
 
-  defp call_terminate(msg_handler, reason, cust_data) do
-    # Not websock compatible, but close enough.
-    # Websock behaviour does not provide a way to communicate
-    # remote close code, which is a bug on their side tbh smh
-    callback_reason = exit_reason_meaning(reason)
+  defp do_handle_result({:push, {type, content}, cust_data}, {status, data}) do
+    data = %{data | cust_data: cust_data}
 
-    _ = apply(msg_handler, :terminate, [callback_reason, cust_data])
+    case do_send(data, type, content) do
+      {:ok, data} ->
+        {:noreply, {status, data}}
+
+      {:error, data, err} ->
+        {:stop, err, {status, data}}
+    end
   end
 
-  defp do_callback(data, fun, args, state \\ :open) do
-    case apply(data.msg_handler, fun, args) do
-      {:ok, cust_data} ->
-        data = %{data | cust_data: cust_data}
-        {:noreply, {state, data}}
+  # {:close, code | {code, binary}, state :: any}
 
-      {:push, msgs, cust_data} when is_list(msgs) ->
-        data = %{data | cust_data: cust_data}
+  defp do_handle_result({:close, {code, reason}, cust_data}, {:open, data}) do
+    data = %{data | cust_data: cust_data}
 
-        case send_multiple(data, msgs) do
-          {:ok, data} ->
-            {:noreply, {state, data}}
+    case do_send_close(code, reason, data) do
+      {:ok, data} -> {:noreply, {{:closing, nil}, data}}
+      {:error, data, error} -> {:stop, error, {{:closing, nil}, data}}
+    end
+  end
 
-          {:error, data, err} ->
-            {:stop, err, {state, data}}
-        end
+  defp do_handle_result({:close, code, cust_data}, {:open, data}) do
+    data = %{data | cust_data: cust_data}
 
-      {:push, {type, content}, cust_data} ->
-        data = %{data | cust_data: cust_data}
+    case do_send_close(code, nil, data) do
+      {:ok, data} -> {:noreply, {{:closing, nil}, data}}
+      {:error, data, error} -> {:stop, error, {{:closing, nil}, data}}
+    end
+  end
 
-        case do_send(data, type, content) do
-          {:ok, data} ->
-            {:noreply, {state, data}}
+  defp do_send_close(code, _reason, data) do
+    Logger.debug("Initiating closing with #{code}.")
 
-          {:error, data, err} ->
-            {:stop, err, {state, data}}
-        end
+    {:ok, websocket, encoded} = Ws.encode(data.websocket, {:close, code, ""})
 
-      {:stop, reason, cust_data} ->
-        data = %{data | cust_data: cust_data}
-        {:stop, reason, {state, data}}
+    case Ws.stream_request_body(data.conn, data.ref, encoded) do
+      {:ok, conn} ->
+        close_timer = Process.send_after(self(), {:close_timeout, data.ref}, 2_000)
+        data = merge(data, %{close_timer: close_timer, conn: conn, websocket: websocket})
+        {:ok, data}
 
-      {:stop, _reason, code, cust_data} ->
-        data = %{data | cust_data: cust_data}
-        {:stop, {:code, code}, {state, data}}
+      {:error, conn, err} ->
+        Logger.warning("Can't send close: #{i(err)}")
+        data = merge(data, %{conn: conn, websocket: websocket})
 
-      {:stop, _reason, code, cust_data, msgs} when is_list(msgs) ->
-        data = %{data | cust_data: cust_data}
-
-        case send_multiple(data, msgs) do
-          {:ok, data} ->
-            {:stop, {:code, code}, {state, data}}
-
-          {:error, data, err} ->
-            {:stop, err, {state, data}}
-        end
-
-      {:stop, _reason, code, cust_data, {type, content}} ->
-        data = %{data | cust_data: cust_data}
-
-        case do_send(data, type, content) do
-          {:ok, data} ->
-            {:stop, {:code, code}, {state, data}}
-
-          {:error, data, err} ->
-            {:stop, err, {:open, data}}
-        end
+        {:error, data, err}
     end
   end
 
