@@ -60,6 +60,13 @@ defmodule Tulle.Websocket do
     GenServer.call(ws, {:send, type, msg})
   end
 
+  @spec close(GenServer.server(), code) ::
+          {:ok, code | :timeout} | {:unclean, error :: term}
+        when code: 1000..4999
+  def close(ws, code) do
+    GenServer.call(ws, {:close, code})
+  end
+
   @impl GenServer
   def init({msg_handler, cust_data, {url, headers, extensions}}) do
     Process.flag(:trap_exit, true)
