@@ -246,7 +246,7 @@ defmodule Tulle.Websocket do
   def handle_info(
         {:resp, {:done, ref}},
         {
-          [:waiting_hs_resp, _from, _status, _headers, :ws_created] = status,
+          [:waiting_hs_resp, _from, _status, _headers, :ws_created],
           %{ref: ref} = data
         }
       ) do
@@ -269,7 +269,7 @@ defmodule Tulle.Websocket do
       end
 
     apply(data.msg_handler, :handle_connect, [data.cust_data])
-    |> do_handle_result({status, data})
+    |> do_handle_result({:open, data})
   end
 
   ## Open
@@ -391,7 +391,7 @@ defmodule Tulle.Websocket do
 
     data = %{data | conn: conn, websocket: websocket}
 
-    _ = apply(data.msg_handler, :handle_close, [code, reason, data.cust_data])
+    _ = apply(data.msg_handler, :handle_remote_close, [code, reason, data.cust_data])
 
     {:stop, :normal, {:closed, data}}
   end
