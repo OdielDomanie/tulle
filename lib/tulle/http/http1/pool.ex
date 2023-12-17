@@ -40,16 +40,38 @@ defmodule Tulle.Http1.Pool do
 
   @impl true
   def init({sv, connect_args}) do
-    {:ok, first_worker, timer} = spawn_http1_worker(sv, connect_args)
-
     state = %{
-      workers: %{first_worker => timer},
       seq: false,
       sv: sv,
       connect_args: connect_args
     }
 
-    {:ok, state}
+    {:ok, state, {:continue, :init}}
+  end
+
+  @impl true
+  def handle_continue(:init, state) do
+    {:ok, first_worker, timer} = spawn_http1_worker(state.sv, state.connect_args)
+
+    state = Map.put(state, :workers, %{first_worker => timer})
+    {:noreply, state}
+  end
+
+  def handle_continue(:spawn_if_low, %{workers: workers} = state) when map_size(workers) >= 1 do
+    {:noreply, state}
+  end
+
+  def handle_continue(:spawn_if_low, %{workers: workers} = state) when map_size(workers) < 1 do
+    case spawn_http1_worker(state.sv, state.connect_args) do
+      {:ok, worker, timer} ->
+        workers = Map.put(workers, worker, timer)
+        state = %{state | workers: workers}
+        {:noreply, state}
+
+      other ->
+        Logger.warning(cant_spawn_worker: other)
+        {:noreply, state}
+    end
   end
 
   defp spawn_http1_worker(sv, connect_args) do
@@ -140,23 +162,5 @@ defmodule Tulle.Http1.Pool do
   def handle_info({:timer, worker}, %{workers: workers} = state)
       when not is_map_key(workers, worker) do
     {:noreply, state}
-  end
-
-  @impl true
-  def handle_continue(:spawn_if_low, %{workers: workers} = state) when map_size(workers) >= 1 do
-    {:noreply, state}
-  end
-
-  def handle_continue(:spawn_if_low, %{workers: workers} = state) when map_size(workers) < 1 do
-    case spawn_http1_worker(state.sv, state.connect_args) do
-      {:ok, worker, timer} ->
-        workers = Map.put(workers, worker, timer)
-        state = %{state | workers: workers}
-        {:noreply, state}
-
-      other ->
-        Logger.warning(cant_spawn_worker: other)
-        {:noreply, state}
-    end
   end
 end
