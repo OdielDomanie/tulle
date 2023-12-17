@@ -4,7 +4,7 @@ defmodule Tulle.MixProject do
   def project do
     [
       app: :tulle,
-      version: "0.6.1",
+      version: "0.6.2",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps()
