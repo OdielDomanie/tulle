@@ -11,7 +11,7 @@ defmodule Tulle.Http do
   Created with `request_collectable/3`.
   When done sending, `close_request!/1` must be called to signal the EOF.
   """
-  @opaque request :: %Request{client: client(), ref: Mint.Types.request_ref()}
+  @opaque request :: %Request{client: client(), ref: Mint.Types.request_ref(), info: any}
 
   @type client :: GenServer.server()
 
@@ -65,6 +65,22 @@ defmodule Tulle.Http do
     :ok = GenServer.call(client, {:chunk, ref, :eof})
 
     receive_stream(ref)
+  end
+
+  @spec set_info(request, any) :: request
+  @doc """
+  Put arbitrary custom data that can be accesses with `get_info/1`
+  """
+  def set_info(request, info) do
+    %Request{request | info: info}
+  end
+
+  @spec get_info(request) :: any
+  @doc """
+  Get the custom data that was put with `set_info/2`
+  """
+  def get_info(request) do
+    request.info
   end
 
   defp receive_stream(ref) do

@@ -153,7 +153,7 @@ defmodule Tulle.HttpTest do
         assert_status(client, :idle, @http_ver)
 
         headers1 = [{"req_id", ref1}]
-        request1 = Http.request_collectable!(client, {:get, "/", headers1})
+        request1 = Http.request_collectable!(client, {:get, "/foopath", headers1})
         assert_status(client, :sending, @http_ver)
 
         {status1, _, iodata_stream1} =
