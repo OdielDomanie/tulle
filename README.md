@@ -1,6 +1,6 @@
 # Tulle
 
-**TODO: Add description**
+Process pool based HTTP1/2 and Websocket client without global names.
 
 ## Installation
 
@@ -10,7 +10,7 @@ by adding `tulle` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:tulle, "~> 0.1.0"}
+    {:tulle, "~> 0.6.3"}
   ]
 end
 ```
