@@ -1,16 +1,21 @@
 defmodule Tulle.MixProject do
   use Mix.Project
 
+  @version "0.6.3"
+
   def project do
     [
       app: :tulle,
       description: "Process pool based HTTP1/2 and Websocket client",
-      version: "0.6.3",
+      version: @version,
       elixir: "~> 1.15",
-      source_url: "https://github.com/OdielDomanie/tulle",
       start_permanent: Mix.env() == :prod,
       package: package(),
-      deps: deps()
+      deps: deps(),
+      docs: [
+        source_url: "https://github.com/OdielDomanie/tulle",
+        source_ref: "v#{@version}"
+      ]
     ]
   end
 
