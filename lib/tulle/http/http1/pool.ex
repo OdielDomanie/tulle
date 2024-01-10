@@ -1,16 +1,21 @@
-defmodule Tulle.Http1.Pool do
+defmodule Tulle.HTTP1.Pool do
+  @worker_idle_min 60_000
+
   @moduledoc """
-  Pool used for Http1.
+  Pool for holding `Tulle.HTTP1.Client` processes.
+
+  In current implementation,
+  at least one connection (one process) is kept open.
+  Idle processes are shutdown with a half-life of
+  #{@worker_idle_min |> div(1_000)} seconds.
   """
 
   use GenServer
 
   require Logger
-  alias Tulle.Http1
+  alias Tulle.HTTP1
 
-  @worker_idle_max 60_000
-
-  @type t :: GenServer.server()
+  @type pool :: GenServer.server()
   @type worker :: pid
 
   def start_link(opts) do
@@ -20,9 +25,9 @@ defmodule Tulle.Http1.Pool do
     GenServer.start_link(__MODULE__, {opts[:sv], connect_args}, opts)
   end
 
-  @spec check_out!(t, timeout()) :: worker()
+  @spec check_out!(pool, timeout()) :: worker()
   @doc """
-  Check-out a `Tulle.Http1.Client` process from the pool,
+  Check-out a `Tulle.HTTP1.Client` process from the pool,
   spawning if necessary.
   """
   def check_out!(pool, timeout \\ 5000) do
@@ -30,9 +35,9 @@ defmodule Tulle.Http1.Pool do
     client
   end
 
-  @spec check_in(t, worker()) :: :ok
+  @spec check_in(pool, worker()) :: :ok
   @doc """
-  Returns a checked-out `Tulle.Http1.Client` back to the pool.
+  Returns a checked-out `Tulle.HTTP1.Client` back to the pool.
   """
   def check_in(pool, client) do
     GenServer.call(pool, {:check_in, client})
@@ -77,7 +82,7 @@ defmodule Tulle.Http1.Pool do
   defp spawn_http1_worker(sv, connect_args) do
     spec =
       Supervisor.child_spec(
-        {Http1.Client, connect_args},
+        {HTTP1.Client, connect_args},
         restart: :temporary
       )
 
@@ -89,7 +94,7 @@ defmodule Tulle.Http1.Pool do
   end
 
   defp set_timer(worker) do
-    Process.send_after(self(), {:timer, worker}, @worker_idle_max)
+    Process.send_after(self(), {:timer, worker}, @worker_idle_min)
   end
 
   @impl true

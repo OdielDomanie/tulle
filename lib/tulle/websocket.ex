@@ -1,11 +1,15 @@
 defmodule Tulle.Websocket do
   @moduledoc """
   Websocket client, implemented as a Genserver.
+
+  `use`'ing this module defines a `child_spec` functions,
+  and defines `@behaviour Tulle.Websocket`.
   """
 
   require Mint.HTTP
   alias Mint.HTTP
   alias Mint.WebSocket, as: Ws
+
   import Map
   require Logger
 

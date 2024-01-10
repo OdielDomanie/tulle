@@ -1,6 +1,6 @@
-defmodule Tulle.Http2.Client do
+defmodule Tulle.HTTP2.Client do
   @moduledoc """
-  HTTP2 Client. Used with `Tulle.Http`.
+  HTTP2 Client. Used with `Tulle.HTTP`.
   """
   use GenServer
 
@@ -10,7 +10,7 @@ defmodule Tulle.Http2.Client do
   alias Mint.HTTP2
   import Mint.HTTP, only: [is_connection_message: 2]
 
-  @type t :: GenServer.name()
+  @type http2_client :: GenServer.server()
 
   def start_link(opts) do
     GenServer.start_link(

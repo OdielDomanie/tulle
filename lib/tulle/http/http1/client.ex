@@ -1,7 +1,8 @@
-defmodule Tulle.Http1.Client do
+defmodule Tulle.HTTP1.Client do
   @moduledoc """
-  HTTP1 Client. Used with `Tulle.Http`.
+  HTTP1 Client. Used with `Tulle.HTTP`.
 
+  Keeps the HTTP connection open
   Tries to reconnect when the connection is lost,
   exits if it can't reconnect with `{:cant_connect, reason}`
   """
@@ -11,7 +12,7 @@ defmodule Tulle.Http1.Client do
   require Logger
   alias Mint.HTTP1
 
-  @type t :: GenServer.name()
+  @type http1_client :: GenServer.server()
 
   def start_link(opts) do
     connect_args =

@@ -1,11 +1,11 @@
-defmodule Tulle.Http1PoolFuzzTest do
+defmodule Tulle.HTTP1PoolFuzzTest do
   use ExUnit.Case, async: true
   import ExUnitProperties
   require Logger
   require Bandit
 
-  alias Tulle.Http
-  alias Tulle.Http1
+  alias Tulle.HTTP
+  alias Tulle.HTTP1
 
   @moduletag :fuzzing
   # @moduletag capture_log: true
@@ -88,7 +88,7 @@ defmodule Tulle.Http1PoolFuzzTest do
     {:ok, sv} = DynamicSupervisor.start_link([])
 
     start_supervised!(
-      {Http1.Pool,
+      {HTTP1.Pool,
        sv: fn -> sv end,
        address: "127.0.0.1",
        port: @port,
@@ -115,10 +115,10 @@ defmodule Tulle.Http1PoolFuzzTest do
         for {req_id, req_resp} <- planned_req do
           fn ->
             Process.sleep(req_resp.delay)
-            client = Http1.Pool.check_out!(pool)
+            client = HTTP1.Pool.check_out!(pool)
 
             {status, _headers, resp_body} =
-              Http.request!(
+              HTTP.request!(
                 client,
                 {:get, "/", [{"req_id", req_id}]},
                 req_resp.req_body
@@ -129,7 +129,7 @@ defmodule Tulle.Http1PoolFuzzTest do
             assert IO.iodata_to_binary(Enum.to_list(resp_body)) ==
                      IO.iodata_to_binary(req_resp.resp_body)
 
-            Http1.Pool.check_in(pool, client)
+            HTTP1.Pool.check_in(pool, client)
           end
         end
         |> Enum.map(&Task.Supervisor.async_nolink(task_sv, &1))
@@ -141,7 +141,7 @@ defmodule Tulle.Http1PoolFuzzTest do
       #   open_conns: :sys.get_state(pool)[:workers] |> map_size
       # )
 
-      stop_supervised!(Http1.Pool)
+      stop_supervised!(HTTP1.Pool)
 
       assert Enum.all?(results, fn {_, res} -> match?({:ok, _}, res) end)
     end
@@ -165,22 +165,22 @@ defmodule Tulle.Http1PoolFuzzTest do
       results =
         for {req_id, req_resp} <- planned_req do
           fn ->
-            client = Http1.Pool.check_out!(pool)
+            client = HTTP1.Pool.check_out!(pool)
 
             collectable =
-              Http.request_collectable!(client, {:get, "/", [{"req_id", req_id}]})
+              HTTP.request_collectable!(client, {:get, "/", [{"req_id", req_id}]})
 
             {status, _headers, resp_body} =
               req_resp.req_body
               |> Enum.into(collectable)
-              |> Http.close_request!()
+              |> HTTP.close_request!()
 
             assert status == req_resp.status
 
             assert IO.iodata_to_binary(Enum.to_list(resp_body)) ==
                      IO.iodata_to_binary(req_resp.resp_body)
 
-            Http1.Pool.check_in(pool, client)
+            HTTP1.Pool.check_in(pool, client)
           end
         end
         |> Enum.map(&Task.Supervisor.async_nolink(task_sv, &1))
@@ -188,7 +188,7 @@ defmodule Tulle.Http1PoolFuzzTest do
 
       assert map_size(planned_req) >= (:sys.get_state(pool)[:workers] |> map_size) - 1
 
-      stop_supervised!(Http1.Pool)
+      stop_supervised!(HTTP1.Pool)
 
       assert Enum.all?(results, fn {_, res} -> match?({:ok, _}, res) end)
     end

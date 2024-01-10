@@ -1,4 +1,4 @@
-defmodule Tulle.Http2FuzzTest do
+defmodule Tulle.HTTP2FuzzTest do
   use ExUnit.Case, async: true
   import ExUnitProperties
 
@@ -6,8 +6,8 @@ defmodule Tulle.Http2FuzzTest do
 
   require Bandit
 
-  alias Tulle.Http
-  alias Tulle.Http2.Client
+  alias Tulle.HTTP
+  alias Tulle.HTTP2.Client
 
   @port 8433
 
@@ -127,7 +127,7 @@ defmodule Tulle.Http2FuzzTest do
         for {req_id, req_resp} <- planned_req do
           fn ->
             {status, _headers, resp_body} =
-              Http.request!(
+              HTTP.request!(
                 client,
                 {:get, "/", [{"req_id", req_id}]},
                 req_resp.req_body
@@ -166,12 +166,12 @@ defmodule Tulle.Http2FuzzTest do
         for {req_id, req_resp} <- planned_req do
           fn ->
             collectable =
-              Http.request_collectable!(client, {:get, "/", [{"req_id", req_id}]})
+              HTTP.request_collectable!(client, {:get, "/", [{"req_id", req_id}]})
 
             {status, _headers, resp_body} =
               req_resp.req_body
               |> Enum.into(collectable)
-              |> Http.close_request!()
+              |> HTTP.close_request!()
 
             assert status == req_resp.status
 

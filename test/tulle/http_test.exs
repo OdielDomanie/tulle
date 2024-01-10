@@ -1,4 +1,4 @@
-defmodule Tulle.HttpTest do
+defmodule Tulle.HTTPTest do
   use ExUnit.Case, async: true
 
   defmodule TestingPlug do
@@ -54,18 +54,18 @@ defmodule Tulle.HttpTest do
     )
   end
 
-  defp assert_status(client, status, "Http1") do
+  defp assert_status(client, status, "HTTP1") do
     assert status == :sys.get_state(client)[:status]
   end
 
-  defp assert_status(_client, _status, "Http2") do
+  defp assert_status(_client, _status, "HTTP2") do
     true
   end
 
-  for http_ver <- ["Http1", "Http2"] do
+  for http_ver <- ["HTTP1", "HTTP2"] do
     describe http_ver do
       @http_ver http_ver
-      alias Tulle.Http
+      alias Tulle.HTTP
 
       test "client connect-disconnect" do
         {:ok, _server} = start_server(%{})
@@ -92,13 +92,13 @@ defmodule Tulle.HttpTest do
 
         assert_status(client, :idle, @http_ver)
         headers1 = [{"req_id", ref1}]
-        {status1, _, iodata_stream1} = Http.request!(client, {:get, "/", headers1}, nil)
+        {status1, _, iodata_stream1} = HTTP.request!(client, {:get, "/", headers1}, nil)
         assert status1 == 204
         assert "" == iodata_stream1 |> Enum.to_list() |> IO.iodata_to_binary()
 
         assert_status(client, :idle, @http_ver)
         headers2 = [{"req_id", ref2}]
-        {status2, _, iodata_stream2} = Http.request!(client, {:get, "/", headers2}, nil)
+        {status2, _, iodata_stream2} = HTTP.request!(client, {:get, "/", headers2}, nil)
         assert status2 == 200
         assert "testy response" == iodata_stream2 |> Enum.to_list() |> IO.iodata_to_binary()
       end
@@ -122,13 +122,13 @@ defmodule Tulle.HttpTest do
 
         assert_status(client, :idle, @http_ver)
         headers1 = [{"req_id", ref1}]
-        {status1, _, iodata_stream1} = Http.request!(client, {:get, "/", headers1}, req1.req_body)
+        {status1, _, iodata_stream1} = HTTP.request!(client, {:get, "/", headers1}, req1.req_body)
         assert status1 == 200
         assert "testy response" == iodata_stream1 |> Enum.to_list() |> IO.iodata_to_binary()
 
         assert_status(client, :idle, @http_ver)
         headers2 = [{"req_id", ref2}]
-        {status2, _, iodata_stream2} = Http.request!(client, {:get, "/", headers2}, req2.req_body)
+        {status2, _, iodata_stream2} = HTTP.request!(client, {:get, "/", headers2}, req2.req_body)
         assert status2 == 200
         assert "testy response2" == iodata_stream2 |> Enum.to_list() |> IO.iodata_to_binary()
       end
@@ -153,7 +153,7 @@ defmodule Tulle.HttpTest do
         assert_status(client, :idle, @http_ver)
 
         headers1 = [{"req_id", ref1}]
-        request1 = Http.request_collectable!(client, {:get, "/foopath", headers1})
+        request1 = HTTP.request_collectable!(client, {:get, "/foopath", headers1})
         assert_status(client, :sending, @http_ver)
 
         {status1, _, iodata_stream1} =
@@ -161,21 +161,21 @@ defmodule Tulle.HttpTest do
           |> :binary.bin_to_list()
           |> Enum.map(fn e -> <<e>> end)
           |> Enum.into(request1)
-          |> Http.close_request!()
+          |> HTTP.close_request!()
 
         assert status1 == 200
         assert "testy response" == iodata_stream1 |> Enum.to_list() |> IO.iodata_to_binary()
 
         assert_status(client, :idle, @http_ver)
         headers2 = [{"req_id", ref2}]
-        request2 = Http.request_collectable!(client, {:get, "/", headers2})
+        request2 = HTTP.request_collectable!(client, {:get, "/", headers2})
 
         {status2, _, iodata_stream2} =
           req2.req_body
           |> :binary.bin_to_list()
           |> Enum.map(fn e -> <<e>> end)
           |> Enum.into(request2)
-          |> Http.close_request!()
+          |> HTTP.close_request!()
 
         assert status2 == 200
         assert "testy response2" == iodata_stream2 |> Enum.to_list() |> IO.iodata_to_binary()

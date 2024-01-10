@@ -1,6 +1,6 @@
-defmodule Tulle.Http do
+defmodule Tulle.HTTP do
   @moduledoc """
-  Make HTTP2 requests with a `DiscordEx.Http2.Client`.
+  Make HTTP requests with a `Tulle.HTTP1.Client` or `Tulle.HTTP2.Client`.
   """
 
   alias __MODULE__.Request
@@ -8,13 +8,21 @@ defmodule Tulle.Http do
   @typedoc """
   A `Collectable` that writes to an HTTP request stream.
 
-  Created with `request_collectable/3`.
+  Created with `request_collectable!/2`.
   When done sending, `close_request!/1` must be called to signal the EOF.
   """
   @opaque request :: %Request{client: client(), ref: Mint.Types.request_ref(), info: any}
 
-  @type client :: GenServer.server()
+  @typedoc """
+  A `Tulle.HTTP1.Client` or `Tulle.HTTP2.Client` or process.
+  """
+  @type client :: Tulle.HTTP1.Client.http1_client() | Tulle.HTTP2.Client.http2_client()
 
+  @typedoc """
+  Method-path-header triple.
+
+  req_params(atom) would indicate method can be either a string or atom.
+  """
   @type req_params(method_alt) ::
           {method :: String.t() | method_alt, path :: String.t(), Mint.Types.headers()}
 
@@ -45,6 +53,12 @@ defmodule Tulle.Http do
   end
 
   @spec request_collectable!(client, req_params(atom)) :: request()
+  @doc """
+  Start a streaming request.
+
+  The returned `t:request/0` object can be `Enum.into/2`'ed.
+  Call `close_request!/1` to signal the EOF.
+  """
   def request_collectable!(client, {method, path, headers}) do
     method = method |> to_string() |> String.upcase()
 
@@ -57,7 +71,7 @@ defmodule Tulle.Http do
   @spec close_request!(request()) ::
           {pos_integer(), Mint.Types.headers(), iodata_stream :: Enum.t()}
   @doc """
-  Sends EOF for the collectable returned by `request_collectable!/3`.
+  Sends EOF for the collectable returned by `request_collectable!/2`.
 
   Returns a triple of the status, the headers, and the response body stream.
   """
