@@ -4,10 +4,21 @@ defmodule Tulle.MixProject do
   def project do
     [
       app: :tulle,
+      description: "Process pool based HTTP1/2 and Websocket client",
       version: "0.6.3",
       elixir: "~> 1.15",
+      source_url: "https://github.com/OdielDomanie/tulle",
       start_permanent: Mix.env() == :prod,
+      package: package(),
       deps: deps()
+    ]
+  end
+
+  defp package do
+    [
+      # These are the default files included in the package
+      licenses: ["MIT"],
+      links: %{"GitHub" => "https://github.com/OdielDomanie/tulle"}
     ]
   end
 
