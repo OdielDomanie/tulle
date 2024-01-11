@@ -11,7 +11,7 @@ defmodule Tulle.HTTP do
   Created with `request_collectable!/2`.
   When done sending, `close_request!/1` must be called to signal the EOF.
   """
-  @opaque request :: %Request{client: client(), ref: Mint.Types.request_ref(), info: any}
+  @opaque request :: __MODULE__.Request.t()
 
   @typedoc """
   A `Tulle.HTTP1.Client` or `Tulle.HTTP2.Client` or process.
@@ -81,21 +81,15 @@ defmodule Tulle.HTTP do
     receive_stream(ref)
   end
 
-  @spec set_info(request, any) :: request
   @doc """
-  Put arbitrary custom data that can be accesses with `get_info/1`
+  Put arbitrary custom data that can be accessed with `get_info/1`
   """
-  def set_info(request, info) do
-    %Request{request | info: info}
-  end
+  defdelegate set_info(request, info), to: __MODULE__.Request
 
-  @spec get_info(request) :: any
   @doc """
   Get the custom data that was put with `set_info/2`
   """
-  def get_info(request) do
-    request.info
-  end
+  defdelegate get_info(request), to: __MODULE__.Request
 
   defp receive_stream(ref) do
     status =
