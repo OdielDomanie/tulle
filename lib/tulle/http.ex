@@ -81,11 +81,13 @@ defmodule Tulle.HTTP do
     receive_stream(ref)
   end
 
+  @spec set_info(request(), any) :: request()
   @doc """
   Put arbitrary custom data that can be accessed with `get_info/1`
   """
   defdelegate set_info(request, info), to: __MODULE__.Request
 
+  @spec get_info(request()) :: any()
   @doc """
   Get the custom data that was put with `set_info/2`
   """
