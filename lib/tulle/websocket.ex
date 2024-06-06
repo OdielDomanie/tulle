@@ -308,7 +308,7 @@ defmodule Tulle.Websocket do
   def handle_info({:ping_time, ref}, {:open, %{ref: ref, pong_received: false} = data}) do
     Logger.error("Websocket pong timed out.")
 
-    {:stop, {:protocol_error, :pong_timeout}, data}
+    {:stop, {:protocol_error, :pong_timeout}, {:open, data}}
   end
 
   ### Receive msgs, send self each frame

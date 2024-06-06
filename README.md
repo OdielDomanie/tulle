@@ -10,7 +10,7 @@ by adding `tulle` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:tulle, "~> 0.6.3"}
+    {:tulle, "~> 0.7.1"}
   ]
 end
 ```
