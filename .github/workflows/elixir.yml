@@ -41,6 +41,8 @@ jobs:
       run: mix docs
     - name: Upload GitHub Pages artifact
       uses: actions/upload-pages-artifact@v1
+      with:
+        path: doc
       
   deploy-docs:
     name: Deploy docs to Pages
